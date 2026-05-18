@@ -46,6 +46,18 @@ type ServerSpec struct {
 	//   "tcp":  dial the port, pass when connection is accepted (no HTTP)
 	//   "none": skip health check entirely, use a 500ms fixed delay
 	HealthType string `toml:"health_type"`
+
+	// UpstreamURL, when set, configures a passthrough proxy to a remote
+	// HTTP/HTTPS endpoint instead of spawning a local process. Exec, Port,
+	// and health-check fields are ignored. The path suffix after the server
+	// name is forwarded verbatim to the upstream.
+	//
+	// Example:
+	//   upstream_url = "https://recon.surgifai.co"
+	//   headers = { "CF-Access-Client-Id" = "...", "CF-Access-Client-Secret" = "..." }
+	UpstreamURL string            `toml:"upstream_url"`
+	// Headers are injected into every proxied request (e.g. CF Access service token).
+	Headers     map[string]string `toml:"headers"`
 }
 
 // DefaultRuntimeConfig returns conservative defaults.

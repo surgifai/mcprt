@@ -3,33 +3,64 @@ listen       = "127.0.0.1:9090"
 log_level    = "info"
 grace_period = "5s"
 
-# --- Example: Python MCP server that accepts --port ---
+# Example: Python MCP server with --port CLI arg
 [server.my-python-mcp]
 exec        = ["/path/to/.venv/bin/my-mcp-server"]
 args        = ["--port", "${MCPRT_PORT}", "--host", "127.0.0.1"]
 health_type = "tcp"
 
-# --- Example: Python server that reads port from an env var ---
+# Example: Python server that reads port from an env var
 [server.my-env-port-mcp]
 exec        = ["/path/to/.venv/bin/python", "-m", "my_mcp.server"]
 working_dir = "/path/to/project"
-env         = { PORT = "${MCPRT_PORT}" }
+env.PORT    = "${MCPRT_PORT}"
 health_type = "tcp"
 health_timeout = "15s"
-acknowledged_stdio_safe = true  # python binary; confirm this server binds HTTP
+acknowledged_stdio_safe = true
 
-# --- Example: Node.js MCP server ---
+# Example: Node.js MCP server
 [server.my-node-mcp]
 exec        = ["/opt/homebrew/bin/node", "/path/to/dist/index.js"]
 working_dir = "/path/to/project"
-env         = { PORT = "${MCPRT_PORT}", NODE_ENV = "production" }
+env.PORT    = "${MCPRT_PORT}"
+env.NODE_ENV = "production"
 health_type = "tcp"
-acknowledged_stdio_safe = true  # node binary; confirm this server binds HTTP
+acknowledged_stdio_safe = true
 
-# --- Example: server with hardcoded port (reads from its own config file) ---
+# Example: server with a hardcoded port (reads from its own config file)
+# Use the static port pin — mcprt routes to it but the port is fixed, not dynamic.
 [server.my-static-port-mcp]
 exec           = ["/path/to/.venv/bin/my-server", "serve"]
 working_dir    = "/path/to/project"
-port           = 8765           # static pin — skip ${MCPRT_PORT} substitution
+port           = 8765
 health_type    = "tcp"
-health_timeout = "30s"          # slow cold-start (e.g. ML model load)
+health_timeout = "30s"
+
+# Example: STDIO MCP server bridged to Streamable HTTP via supergateway
+# Many npm-based MCP servers only support STDIO. supergateway acts as a
+# STDIO -> HTTP bridge so mcprt can manage them. The exec binary is supergateway;
+# the MCP server itself runs as supergateway's subprocess and never speaks STDIO
+# to mcprt directly.
+[server.my-stdio-mcp]
+exec = [
+  "/opt/homebrew/bin/supergateway",
+  "--stdio", "npx @modelcontextprotocol/server-filesystem",
+  "--outputTransport", "streamableHttp",
+  "--streamableHttpPath", "/mcp",
+  "--port", "${MCPRT_PORT}",
+  "--logLevel", "none"
+]
+env.PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+health_type    = "tcp"
+health_timeout = "60s"
+acknowledged_stdio_safe = true
+
+# Example: remote HTTP endpoint passthrough — no local process spawned.
+# Use this for cloud-hosted MCP endpoints, AWS Lambda functions, etc.
+# mcprt forwards requests verbatim to upstream_url + path suffix.
+# Headers are injected into every proxied request (e.g. cloud access tokens).
+[server.my-remote-mcp]
+upstream_url = "https://api.example.com"
+
+[server.my-remote-mcp.headers]
+Authorization = "Bearer your-token-here"

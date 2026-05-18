@@ -16,7 +16,7 @@ watchdogd in 93 seconds
 Compressor Info: 100% of segments limit (BAD) with 45 swapfiles
 ```
 
-A 16 GB Apple Silicon Mac Mini hard-rebooted twice during a Next.js build. The build triggered the VM compressor saturation, but a process audit showed why there was no headroom: MCP servers and their child processes were holding ~1.5 GB of resident memory at idle. Chrome DevTools MCP had spawned duplicate instances — two server processes, two npm parents, two node watchdogs — eating 1.2 GB alone. Add vault-mcp (122 MB), surgifai-coderag (229 MB), colab-mcp (100 MB), LiteLLM (331 MB), and the Claude session itself (718 MB), and nearly 3 GB was spoken for before the build even started. On unified memory that competes directly with GPU allocation.
+A 16 GB Apple Silicon Mac Mini hard-rebooted twice during a Next.js build. The build triggered the VM compressor saturation, but a process audit showed why there was no headroom: MCP servers and their child processes were holding ~1.5 GB of resident memory at idle. Chrome DevTools MCP had spawned duplicate instances — two server processes, two npm parents, two node watchdogs — eating 1.2 GB alone. Add server-a (122 MB), server-b (229 MB), server-c (100 MB), LiteLLM (331 MB), and the Claude session itself (718 MB), and nearly 3 GB was spoken for before the build even started. On unified memory that competes directly with GPU allocation.
 
 Stopping the MCP services eliminated the panics. They were the easiest ~1.5 GB to reclaim without losing anything actively in use. The open question was how to get that memory back without losing the servers when actually needed. This is the answer.
 
@@ -61,10 +61,10 @@ Every server you add to `~/.claude/mcp.json` (or your Cline/Continue config) spa
 | npm × 2 (parents of above) | 347 MB |
 | node watchdogs × 2 (for above) | 429 MB |
 | litellm python | 331 MB |
-| surgifai-coderag node | 229 MB |
+| server-b | 229 MB |
 | omlx serve (local ML model server) | 125 MB |
-| vault-mcp | 122 MB |
-| colab-mcp | 100 MB |
+| server-a | 122 MB |
+| server-c | 100 MB |
 | openclaw gateway | ~50 MB |
 | **Total** | **~2.9 GB** |
 
@@ -100,7 +100,7 @@ There was no lightweight, opinionated, single-binary tool that said "MCP servers
 
 ### Connection-refcounted lifecycle
 
-mcprt runs a single proxy on `127.0.0.1:9090`. Each MCP server gets a named route (`/vault-mcp/...`, `/ga-surgifai/...`). The upstream process only exists while at least one client connection is open.
+mcprt runs a single proxy on `127.0.0.1:9090`. Each MCP server gets a named route (`/server-a/...`, `/server-b/...`). The upstream process only exists while at least one client connection is open.
 
 ```
 Before (always-on launchd):   MCP servers alone = ~1.5 GB idle, always
@@ -149,7 +149,7 @@ To acknowledge a Python binary that genuinely binds HTTP: set `acknowledged_stdi
 
 ## Stress test results
 
-Concurrent cold-start of 4 MCP servers (vault-mcp, surgifai-coderag, Google Analytics, Google Ads) on a Mac Mini M2, sampled every 3 seconds.
+Concurrent cold-start of 4 MCP servers (server-a, server-b, server-c, server-d) on a Mac Mini M2, sampled every 3 seconds.
 
 ```
 timestamp   mcprt    vault     coderag   GA        Ads      children
@@ -169,30 +169,30 @@ timestamp   mcprt    vault     coderag   GA        Ads      children
 State machine log during the same run:
 
 ```
-17:13:07  INFO  cold start triggered          server=vault-mcp
-17:13:07  INFO  state change  idle→spawning   server=vault-mcp
-17:13:08  INFO  state change  spawning→running server=vault-mcp   ← health passed in 800ms
-17:13:09  INFO  cold start triggered          server=surgifai-coderag
-17:13:09  INFO  state change  idle→spawning   server=surgifai-coderag
-17:13:11  INFO  state change  spawning→running server=surgifai-coderag
-17:13:11  INFO  cold start triggered          server=ga-vyledentistry
-17:13:11  INFO  state change  idle→spawning   server=ga-vyledentistry
-17:13:12  INFO  state change  spawning→running server=ga-vyledentistry
-17:13:17  INFO  refcount debounce expired, stopping server=ga-vyledentistry
-17:13:17  INFO  sending SIGTERM               server=ga-vyledentistry
-17:13:17  INFO  state change  running→stopping server=ga-vyledentistry
-17:13:18  INFO  process exited                server=ga-vyledentistry  err=<nil>
-17:13:18  INFO  state change  stopping→idle   server=ga-vyledentistry
+17:13:07  INFO  cold start triggered          server=server-a
+17:13:07  INFO  state change  idle→spawning   server=server-a
+17:13:08  INFO  state change  spawning→running server=server-a   ← health passed in 800ms
+17:13:09  INFO  cold start triggered          server=server-b
+17:13:09  INFO  state change  idle→spawning   server=server-b
+17:13:11  INFO  state change  spawning→running server=server-b
+17:13:11  INFO  cold start triggered          server=server-d
+17:13:11  INFO  state change  idle→spawning   server=server-d
+17:13:12  INFO  state change  spawning→running server=server-d
+17:13:17  INFO  refcount debounce expired, stopping server=server-d
+17:13:17  INFO  sending SIGTERM               server=server-d
+17:13:17  INFO  state change  running→stopping server=server-d
+17:13:18  INFO  process exited                server=server-d  err=<nil>
+17:13:18  INFO  state change  stopping→idle   server=server-d
 ```
 
 Server responses confirmed during the run:
 
 | Server | Status | Version | Tools |
 |---|---|---|---|
-| vault-mcp | ✅ | vault_mcp 1.27.0 | 3 (query, fetch, stats) |
-| surgifai-coderag | ✅ | surgifai-coderag 0.1.0 | 36 |
-| ga-vyledentistry | ✅ | Google Analytics MCP | — |
-| google-ads | ✅ | Google Ads Server 3.2.4 | — |
+| server-a | ✅ | server-a 1.27.0 | 3 (query, fetch, stats) |
+| server-b | ✅ | server-b 0.1.0 | 36 |
+| server-d | ✅ | Google Analytics MCP | — |
+| server-e | ✅ | Google Ads Server 3.2.4 | — |
 
 ---
 
@@ -204,8 +204,8 @@ Claude Code / Cline / Continue
         ▼
 mcprt  127.0.0.1:9090
         │
-        ├─ /vault-mcp/...    RefCounter ── Supervisor ── vault-mcp  :19000  (running)
-        ├─ /ga-surgifai/...  RefCounter ── Supervisor ── analytics  :19001  (idle)
+        ├─ /server-a/...    RefCounter ── Supervisor ── server-a  :19000  (running)
+        ├─ /server-d/...  RefCounter ── Supervisor ── analytics  :19001  (idle)
         └─ /google-ads/...   RefCounter ── Supervisor ── ads-mcp    :19002  (idle)
 ```
 
@@ -386,19 +386,44 @@ Connect from your AI client — `mcprt status` should show each server transitio
 [runtime]
 listen       = "127.0.0.1:9090"   # proxy bind address
 log_level    = "info"              # debug | info | warn | error
-grace_period = "5s"                # debounce before stopping (not an idle timeout)
+grace_period = "5s"               # debounce before stopping (not an idle timeout)
+
+# ── Local process (spawned on demand) ─────────────────────────────────────
 
 [server.<name>]
 exec                    = ["/abs/path/to/binary"]
 args                    = ["--port", "${MCPRT_PORT}", "--host", "127.0.0.1"]
-env                     = { KEY = "value" }
-health_path             = "/health"    # HTTP GET probe; omit for 500ms fixed delay
+env                     = { PORT = "${MCPRT_PORT}", KEY = "value" }
 working_dir             = "/path/to"
-allow_external          = false        # non-loopback bind; default false
-acknowledged_stdio_safe = false        # suppress launcher warning; leave a comment why
+port                    = 8765           # static pin — skips dynamic allocation
+health_type             = "tcp"           # "tcp" | "http" | "none" (default: tcp)
+health_path             = "/health"       # required when health_type = "http"
+health_timeout          = "15s"           # raise for slow-starting servers
+allow_external          = false           # allow non-loopback bind; default false
+acknowledged_stdio_safe = false           # suppress launcher warning; leave a comment why
+
+# ── Remote passthrough (no local process) ─────────────────────────────────
+
+[server.<name>]
+upstream_url = "https://api.example.com"
+
+[server.<name>.headers]
+Authorization = "Bearer your-token-here"
+CF-Access-Client-Id = "your-client-id"
 ```
 
-`${MCPRT_PORT}` is the only variable. mcprt allocates one port per server from 19000 upward and substitutes it in both `args` and `env`.
+**`${MCPRT_PORT}`** is substituted in both `args` and `env` values. mcprt allocates
+dynamically from 19000 upward unless `port` is set to a static value.
+
+**`health_type` options:**
+- `tcp` (default): dial the port, pass when connection is accepted
+- `http`: GET `health_path`, pass if status < 500
+- `none`: skip check, use a fixed 500ms delay
+
+**Remote passthrough** (`upstream_url`): requests are forwarded verbatim to the
+upstream URL with the `/<server-name>` prefix stripped from the path. Headers
+from `[server.<name>.headers]` are injected into every proxied request. No process
+is spawned — mcprt acts as a plain HTTP proxy for cloud-hosted MCP endpoints.
 
 ---
 
@@ -468,25 +493,16 @@ Public API: `runtime.Runtime`, `manifest.Config`, `manifest.ServerSpec`, `proxy.
 
 ## Troubleshooting
 
-### macOS: vault-mcp hangs at startup, health check times out
-
-**Symptom:** `spawn failed: health check for "vault-mcp": context deadline exceeded`. The vault-mcp process appears in `ps aux` but never binds its port. `sample <pid>` shows Python stuck in `__open_nocancel` during `Py_InitializeFromConfig`.
-
-**Cause:** macOS TCC (privacy controls) blocks launchd-spawned processes from accessing external volumes (`/Volumes/...`) until Full Disk Access is granted. The `open()` syscall hangs indefinitely waiting for user consent. This does not affect terminal-launched processes because Terminal.app already holds FDA and child processes inherit access.
-
-**Fix:** System Settings → Privacy & Security → Full Disk Access → `+` → navigate to `~/.local/bin/mcprt` → toggle on. Then restart the daemon:
-
-```bash
-launchctl kickstart -k gui/$(id -u)/com.victor.mcprt
-```
-
-This applies to any mcprt-managed server whose binary lives outside `~/`. If you move servers to `~/` or a system path, FDA is not required.
-
 ### Health check times out but the server process is running
 
-**Symptom:** `spawn failed: health check ... context deadline exceeded`. The server process appears in `ps aux`, is binding its port, and works when started manually — but mcprt gives up before it's ready.
+**Symptom:** `spawn failed: health check ... context deadline exceeded`. The server
+process appears in `ps aux`, is binding its port, and works when started manually —
+but mcprt gives up before it's ready.
 
-**Cause:** The default health check timeout is 5 seconds. Some servers (Python with heavy imports, Node.js with large dependency trees, anything loading ML models or doing OAuth init at startup) take longer. The 5s default fires before the process has finished initializing.
+**Cause:** The default health check timeout is 5 seconds. Some servers (Python with
+heavy imports, Node.js with large dependency trees, anything loading ML models or
+doing OAuth init at startup) take longer. The 5s default fires before the process
+has finished initializing.
 
 **Diagnosis:**
 
@@ -500,7 +516,7 @@ lsof -i :<expected-port>
 
 If the process shows up in `ps` and the port is bound, the issue is purely timing.
 
-**Fix:** Add `health_timeout` and `health_type = "tcp"` to the server spec:
+**Fix:** Set `health_timeout` and `health_type = "tcp"` in the server spec:
 
 ```toml
 [server.my-slow-server]
@@ -510,9 +526,11 @@ health_type    = "tcp"
 health_timeout = "20s"   # raise until cold-start consistently passes
 ```
 
-Use `"tcp"` health type when the server doesn't expose an HTTP health endpoint — it just checks that the port is accepting connections, which happens earlier in startup than HTTP handlers being ready.
+Use `health_type = "tcp"` when the server doesn't expose an HTTP health endpoint —
+it checks that the port is accepting connections, which happens earlier in startup
+than HTTP handlers being ready.
 
-**Rule of thumb for timeout values:**
+**Timeout guide:**
 
 | Server type | Suggested `health_timeout` |
 |---|---|
@@ -520,6 +538,25 @@ Use `"tcp"` health type when the server doesn't expose an HTTP health endpoint �
 | Python with heavy imports (FastAPI, ADK, etc.) | `15s`–`20s` |
 | Node.js with large dependency tree | `10s`–`15s` |
 | Python loading ML model at startup | `30s`–`60s` |
+| uvx / npx hot-fetch on first invocation | `60s`+ |
+
+### macOS: server hangs at startup, health check times out
+
+**Symptom:** The process appears in `ps aux` but never binds its port. `sample <pid>`
+shows it stuck in a syscall waiting for user consent.
+
+**Cause:** macOS TCC (privacy controls) blocks launchd-spawned processes from accessing
+files outside `~/` (e.g. external drives, `/Volumes/...`). The `open()` syscall hangs
+indefinitely waiting for user consent. Terminal-launched processes are not affected
+because Terminal.app already holds Full Disk Access.
+
+**Fix:** Either move the server binary to `~/` or a system path, or grant Full Disk
+Access to mcprt in System Settings → Privacy & Security → Full Disk Access → `+` →
+navigate to mcprt. Then restart:
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.mcprt.daemon
+```
 
 ---
 

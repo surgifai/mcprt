@@ -171,6 +171,15 @@ func (r *Runtime) AllStats() []supervisor.Stats {
 // --- internal ---
 
 func (r *Runtime) registerServer(name string, spec manifest.ServerSpec, gracePeriod time.Duration, logDir string) {
+	// Remote upstream: no process to supervise, no port, no refcounting.
+	if spec.UpstreamURL != "" {
+		r.handler.Register(name, &proxy.ServerEntry{
+			UpstreamURL: spec.UpstreamURL,
+			Headers:     spec.Headers,
+		})
+		return
+	}
+
 	port := r.allocPort(name, spec)
 
 	ref := proxy.NewRefCounter(gracePeriod, func() {

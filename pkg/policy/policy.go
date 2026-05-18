@@ -68,6 +68,11 @@ func validateRuntime(cfg *manifest.Config) []Violation {
 func validateServer(name string, spec manifest.ServerSpec) []Violation {
 	var vv []Violation
 
+	// Remote upstream passthrough — no local process, no port, no STDIO concern.
+	if spec.UpstreamURL != "" {
+		return vv
+	}
+
 	// --- STDIO detection (hard error) ---
 
 	if len(spec.Exec) == 0 {

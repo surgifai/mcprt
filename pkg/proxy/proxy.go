@@ -15,10 +15,14 @@ import (
 )
 
 // ServerEntry bundles a supervisor with its refcounter.
+// For remote upstream entries (UpstreamURL != ""), Sup and Ref are nil and
+// no process lifecycle management is performed.
 type ServerEntry struct {
 	Sup          *supervisor.Supervisor
 	Ref          *RefCounter
-	SpawnTimeout time.Duration // overrides Handler.spawnTimeout for this server
+	SpawnTimeout time.Duration    // overrides Handler.spawnTimeout for this server
+	UpstreamURL  string           // remote HTTP/HTTPS base URL; when set Sup is nil
+	Headers      map[string]string // injected into every proxied request
 	name         string
 	logger       *slog.Logger
 }
@@ -79,6 +83,32 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if !ok {
 		http.Error(w, fmt.Sprintf("mcprt: unknown server %q", name), http.StatusNotFound)
+		return
+	}
+
+	// Remote upstream passthrough: skip all process lifecycle, forward directly.
+	if entry.UpstreamURL != "" {
+		target, err := url.Parse(entry.UpstreamURL)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("mcprt: invalid upstream URL for %q: %v", name, err), http.StatusInternalServerError)
+			return
+		}
+		rp := &httputil.ReverseProxy{
+			Director: func(req *http.Request) {
+				req.URL.Scheme = target.Scheme
+				req.URL.Host = target.Host
+				req.URL.Path = tail
+				req.Host = target.Host
+				for k, v := range entry.Headers {
+					req.Header.Set(k, v)
+				}
+			},
+			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+				entry.logger.Error("upstream error", "err", err)
+				http.Error(w, fmt.Sprintf("mcprt: upstream %q error: %v", name, err), http.StatusBadGateway)
+			},
+		}
+		rp.ServeHTTP(w, r)
 		return
 	}
 
