@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build darwin || windows
 
 package cli
 
@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -48,9 +49,9 @@ func trayCmd() *cobra.Command {
 	var cfgPath string
 	cmd := &cobra.Command{
 		Use:   "tray",
-		Short: "macOS menubar app — shows server status and manages the SSH tunnel to the headless machine",
+		Short: "System tray app — shows server status and manages the SSH tunnel to the headless machine",
 		Long: `mcprt tray connects to a remote mcprt daemon via SSH tunnel and shows
-server status in the macOS menubar. Requires a tray.toml config file.
+server status in the system tray. Requires a tray.toml config file.
 
 Example tray.toml (~/.config/mcprt/tray.toml):
 
@@ -330,7 +331,16 @@ func trayIcon() []byte {
 }
 
 func openBrowser(url string) {
-	_ = exec.Command("open", url).Start()
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
 }
 
 func expandHomePath(s string) string {
