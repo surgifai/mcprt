@@ -186,6 +186,7 @@ func (r *Runtime) Servers() []api.ServerStatus {
 			LastError:    s.LastError,
 			Requests:     s.Requests,
 			Errors:       s.Errors,
+			RSS:          s.RSS,
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

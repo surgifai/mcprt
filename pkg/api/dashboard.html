@@ -58,8 +58,8 @@ td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:
   <div class="card" id="servers-card">
     <div class="card-hdr">Servers <span class="badge" id="server-count">—</span></div>
     <table>
-      <thead><tr><th>Name</th><th>State</th><th>Port</th><th>Requests</th><th>Uptime</th><th></th></tr></thead>
-      <tbody id="servers-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      <thead><tr><th>Name</th><th>State</th><th>Port</th><th>Requests</th><th>Uptime</th><th>RAM</th><th></th></tr></thead>
+      <tbody id="servers-body"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
   <div class="card">
@@ -101,7 +101,14 @@ function stateClass(s) {
   return {running:'s-running',idle:'s-idle',spawning:'s-spawning',stopping:'s-stopping'}[s]||'s-idle';
 }
 
-function uptime(ts) {
+function fmtRSS(bytes) {
+  if (!bytes) return '—';
+  if (bytes < 1024*1024) return Math.round(bytes/1024)+'MB';
+  return (bytes/1024/1024).toFixed(0)+'MB';
+}
+
+function uptime(state, ts) {
+  if (state !== 'running' && state !== 'spawning') return '—';
   if (!ts || ts.startsWith('0001')) return '—';
   const s = Math.floor((Date.now() - new Date(ts))/1000);
   if (s < 60) return s+'s';
@@ -118,14 +125,15 @@ async function loadServers() {
     const list = (Array.isArray(data) ? data : []).sort((a,b)=>a.name.localeCompare(b.name));
     document.getElementById('server-count').textContent = list.length;
     const tb = document.getElementById('servers-body');
-    if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No servers configured</td></tr>'; return; }
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="7" class="empty">No servers configured</td></tr>'; return; }
     tb.innerHTML = list.map(s => `<tr>
       <td class="mono">${s.name}</td>
       <td><div class="state"><div class="sdot ${stateClass(s.state)}"></div>${s.state}</div>
           ${s.last_error?`<div class="err-msg" title="${s.last_error}">${s.last_error}</div>`:''}</td>
       <td class="mono">${s.port||'—'}</td>
       <td class="muted">${s.requests||0}</td>
-      <td class="muted">${uptime(s.last_spawn)}</td>
+      <td class="muted">${uptime(s.state, s.last_spawn)}</td>
+      <td class="muted">${fmtRSS(s.rss)}</td>
       <td style="text-align:right">${(s.state==='running'||s.state==='spawning')
         ?`<button class="btn btn-stop" onclick="stopSrv('${s.name}')">Stop</button>`
         :`<button class="btn btn-start" onclick="startSrv('${s.name}')">Start</button>`}</td>

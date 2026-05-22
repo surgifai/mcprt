@@ -122,6 +122,7 @@ func (s *Supervisor) Stats() Stats {
 		LastError:    s.lastErr,
 		Requests:     s.totalRequests.Load(),
 		Errors:       s.totalErrors.Load(),
+		RSS:          rss(pid),
 	}
 }
 
@@ -420,4 +421,21 @@ type Stats struct {
 	LastError    string
 	Requests     int64
 	Errors       int64
+	RSS          int64 // resident memory in bytes; 0 when process is not running
+}
+
+// rss returns the resident set size of pid in bytes, or 0 on error.
+func rss(pid int) int64 {
+	if pid <= 0 {
+		return 0
+	}
+	out, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0
+	}
+	kb, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return kb * 1024
 }

@@ -22,6 +22,7 @@ type ServerStatus struct {
 	LastError    string    `json:"last_error,omitempty"`
 	Requests     int64     `json:"requests"`
 	Errors       int64     `json:"errors"`
+	RSS          int64     `json:"rss"` // resident memory in bytes
 }
 
 // Controller is the interface the API uses to observe and control the runtime.
