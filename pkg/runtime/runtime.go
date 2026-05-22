@@ -11,21 +11,24 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/surgifai-com/mcprt/pkg/api"
 	"github.com/surgifai-com/mcprt/pkg/manifest"
 	"github.com/surgifai-com/mcprt/pkg/policy"
 	"github.com/surgifai-com/mcprt/pkg/proxy"
+	"github.com/surgifai-com/mcprt/pkg/secrets"
 	"github.com/surgifai-com/mcprt/pkg/supervisor"
 )
 
 // Runtime is the central coordinator.
 type Runtime struct {
-	cfg         *manifest.Config
+	cfg          *manifest.Config
 	manifestPath string
-	logger      *slog.Logger
+	logger       *slog.Logger
 
 	mu       sync.RWMutex
 	sups     map[string]*supervisor.Supervisor
@@ -34,10 +37,12 @@ type Runtime struct {
 	nextPort int
 
 	handler *proxy.Handler
+	mux     *http.ServeMux
+	store   *secrets.Store
 
 	// Lifecycle hooks for embedders.
-	OnSpawn         func(name string)
-	OnExit          func(name string)
+	OnSpawn          func(name string)
+	OnExit           func(name string)
 	OnRefcountChange func(name string, count int)
 }
 
@@ -49,7 +54,7 @@ type Options struct {
 	BasePort     int // first port to allocate from (default 19000)
 }
 
-// New loads the manifest, validates it, and returns a configured Runtime.
+// New loads the manifest, resolves secrets, validates, and returns a configured Runtime.
 // It does NOT start any servers or listen on any port yet.
 func New(opts Options) (*Runtime, error) {
 	logger := opts.Logger
@@ -65,6 +70,22 @@ func New(opts Options) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Load secrets from Keychain, then overlay any secrets_file values for gaps.
+	store, vars, err := loadSecrets(cfg, logger)
+	if err != nil {
+		// Non-fatal: log and continue with no secrets. Servers using ${VAR}
+		// will start with unresolved placeholders, which is preferable to refusing to start.
+		logger.Warn("secrets store unavailable; ${VAR} substitution skipped", "err", err)
+		vars = map[string]string{}
+	}
+	if missing := manifest.ExpandVars(cfg, vars); len(missing) > 0 {
+		for _, k := range missing {
+			logger.Warn("unresolved secret reference", "var", k,
+				"hint", "run: mcprt secrets set "+k+" <value>")
+		}
+	}
+
 	vv := policy.Validate(cfg)
 	if policy.HasErrors(vv) {
 		for _, v := range vv {
@@ -85,6 +106,8 @@ func New(opts Options) (*Runtime, error) {
 		base = 19000
 	}
 
+	proxyHandler := proxy.NewHandler(logger, 10*time.Second)
+
 	r := &Runtime{
 		cfg:          cfg,
 		manifestPath: opts.ManifestPath,
@@ -93,7 +116,8 @@ func New(opts Options) (*Runtime, error) {
 		refs:         make(map[string]*proxy.RefCounter),
 		ports:        make(map[string]int),
 		nextPort:     base,
-		handler:      proxy.NewHandler(logger, 10*time.Second),
+		handler:      proxyHandler,
+		store:        store,
 	}
 
 	gracePeriod, err := time.ParseDuration(cfg.Runtime.GracePeriod)
@@ -105,14 +129,96 @@ func New(opts Options) (*Runtime, error) {
 		r.registerServer(name, spec, gracePeriod, opts.LogDir)
 	}
 
+	// Build top-level mux: /_api/ and /_dashboard/ are handled before the proxy.
+	var apiStore api.SecretStore
+	if store != nil {
+		apiStore = store
+	}
+	apiHandler := api.New(r, apiStore, cfg.Runtime.APIKey)
+	mux := http.NewServeMux()
+	mux.Handle("/_api/", apiHandler)
+	mux.Handle("/_dashboard/", apiHandler)
+	mux.HandleFunc("/_dashboard", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/_dashboard/", http.StatusMovedPermanently)
+	})
+	mux.Handle("/", proxyHandler)
+	r.mux = mux
+
 	return r, nil
+}
+
+// secretsPath returns the resolved secrets file path: explicit config value or
+// the default ~/.config/mcprt/secrets.env.
+func secretsPath(cfg *manifest.Config) string {
+	if cfg.Runtime.SecretsFile != "" {
+		return cfg.Runtime.SecretsFile
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "mcprt", "secrets.env")
+}
+
+// loadSecrets opens the secrets file and returns the store + all resolved vars.
+func loadSecrets(cfg *manifest.Config, logger *slog.Logger) (*secrets.Store, map[string]string, error) {
+	store, err := secrets.Open(secretsPath(cfg))
+	if err != nil {
+		return nil, nil, err
+	}
+	vars, err := store.LoadAll()
+	if err != nil {
+		return store, map[string]string{}, fmt.Errorf("reading secrets file: %w", err)
+	}
+	return store, vars, nil
+}
+
+// Servers returns the current status of all registered servers as API types, sorted A-Z.
+// Implements api.Controller.
+func (r *Runtime) Servers() []api.ServerStatus {
+	raw := r.AllStats()
+	out := make([]api.ServerStatus, len(raw))
+	for i, s := range raw {
+		out[i] = api.ServerStatus{
+			Name:         s.Name,
+			State:        string(s.State),
+			Port:         s.Port,
+			PID:          s.PID,
+			RestartCount: s.RestartCount,
+			LastSpawn:    s.LastSpawn,
+			LastError:    s.LastError,
+			Requests:     s.Requests,
+			Errors:       s.Errors,
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// StartServer spawns the named server. Implements api.Controller.
+func (r *Runtime) StartServer(ctx context.Context, name string) error {
+	r.mu.RLock()
+	sup, ok := r.sups[name]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown server %q", name)
+	}
+	return sup.Start(ctx)
+}
+
+// StopServer stops the named server. Implements api.Controller.
+func (r *Runtime) StopServer(name string) error {
+	r.mu.RLock()
+	sup, ok := r.sups[name]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown server %q", name)
+	}
+	return sup.Stop()
 }
 
 // Serve starts the HTTP listener and blocks until ctx is cancelled.
 func (r *Runtime) Serve(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:    r.cfg.Runtime.Listen,
-		Handler: r.handler,
+		Handler: r.mux,
 	}
 
 	ln, err := net.Listen("tcp", r.cfg.Runtime.Listen)
@@ -286,6 +392,21 @@ func (r *Runtime) reload() {
 		r.logger.Error("hot-reload: parse failed", "err", err)
 		return
 	}
+
+	// Re-resolve secrets on every reload so edits to secrets.env take effect.
+	if r.store != nil {
+		vars, err := r.store.LoadAll()
+		if err != nil {
+			r.logger.Warn("hot-reload: secrets read failed", "err", err)
+			vars = map[string]string{}
+		}
+		if missing := manifest.ExpandVars(cfg, vars); len(missing) > 0 {
+			for _, k := range missing {
+				r.logger.Warn("hot-reload: unresolved secret reference", "var", k)
+			}
+		}
+	}
+
 	vv := policy.Validate(cfg)
 	if policy.HasErrors(vv) {
 		for _, v := range vv {

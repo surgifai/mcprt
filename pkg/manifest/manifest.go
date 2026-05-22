@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -21,6 +22,12 @@ type RuntimeConfig struct {
 	Listen      string `toml:"listen"`
 	LogLevel    string `toml:"log_level"`
 	GracePeriod string `toml:"grace_period"`
+	// APIKey protects the /_api/ REST endpoints. Supports ${VAR} substitution
+	// from the secrets store. Leave empty to disable auth (localhost-only deployments).
+	APIKey string `toml:"api_key"`
+	// SecretsFile is the path to the chmod-600 KEY=VALUE secrets file.
+	// Defaults to ~/.config/mcprt/secrets.env when unset.
+	SecretsFile string `toml:"secrets_file"`
 }
 
 // ServerSpec defines a single managed MCP server.
@@ -102,6 +109,93 @@ func parse(data []byte) (*Config, error) {
 	}
 	cfg.Runtime.Listen = expandHome(cfg.Runtime.Listen)
 	return cfg, nil
+}
+
+// varPattern matches ${VAR_NAME} placeholders (ASCII identifiers only).
+var varPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// ExpandVars substitutes ${VAR} placeholders across all string fields in cfg
+// using the provided vars map. ${MCPRT_PORT} is left untouched — it is
+// substituted at process-spawn time by the supervisor.
+// Returns the list of placeholder names that were referenced but not found in vars.
+func ExpandVars(cfg *Config, vars map[string]string) []string {
+	seen := map[string]bool{}
+	var missing []string
+
+	expand := func(s string) string {
+		return varPattern.ReplaceAllStringFunc(s, func(m string) string {
+			key := m[2 : len(m)-1]
+			if key == "MCPRT_PORT" {
+				return m
+			}
+			if val, ok := vars[key]; ok {
+				return val
+			}
+			if !seen[key] {
+				seen[key] = true
+				missing = append(missing, key)
+			}
+			return m
+		})
+	}
+
+	cfg.Runtime.APIKey = expand(cfg.Runtime.APIKey)
+
+	for name, spec := range cfg.Server {
+		for i, e := range spec.Exec {
+			spec.Exec[i] = expand(e)
+		}
+		for i, a := range spec.Args {
+			spec.Args[i] = expand(a)
+		}
+		for k, v := range spec.Env {
+			spec.Env[k] = expand(v)
+		}
+		for k, v := range spec.Headers {
+			spec.Headers[k] = expand(v)
+		}
+		spec.UpstreamURL = expand(spec.UpstreamURL)
+		cfg.Server[name] = spec
+	}
+	return missing
+}
+
+// FindVarRefs returns the unique set of ${VAR} placeholder names referenced
+// anywhere in the config. Used by `mcprt secrets verify`.
+func FindVarRefs(cfg *Config) []string {
+	seen := map[string]bool{}
+	var refs []string
+
+	collect := func(s string) {
+		for _, m := range varPattern.FindAllStringSubmatch(s, -1) {
+			key := m[1]
+			if key == "MCPRT_PORT" {
+				continue
+			}
+			if !seen[key] {
+				seen[key] = true
+				refs = append(refs, key)
+			}
+		}
+	}
+
+	collect(cfg.Runtime.APIKey)
+	for _, spec := range cfg.Server {
+		for _, e := range spec.Exec {
+			collect(e)
+		}
+		for _, a := range spec.Args {
+			collect(a)
+		}
+		for _, v := range spec.Env {
+			collect(v)
+		}
+		for _, v := range spec.Headers {
+			collect(v)
+		}
+		collect(spec.UpstreamURL)
+	}
+	return refs
 }
 
 func expandHome(s string) string {

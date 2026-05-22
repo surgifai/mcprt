@@ -1,5 +1,5 @@
 # binaries
-mcprt
+/mcprt
 mcprt-*
 dist/
 
@@ -15,3 +15,8 @@ checksums.txt
 .idea/
 .vscode/
 *.swp
+
+# personal config — never commit user-specific settings or secrets
+*.env
+*.toml.local
+tray.toml

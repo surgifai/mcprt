@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcprt</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0d1117;color:#e2e8f0;min-height:100vh}
+header{padding:18px 32px;border-bottom:1px solid #1e2433;display:flex;align-items:center;gap:12px}
+.logo{font-size:17px;font-weight:700;letter-spacing:-0.3px;color:#fff}
+.conn{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:12px;color:#64748b}
+.dot{width:7px;height:7px;border-radius:50%;background:#22c55e;transition:background .3s}
+.dot.err{background:#ef4444}
+main{padding:28px 32px;display:grid;gap:24px;max-width:1100px}
+.card{background:#161b27;border:1px solid #1e2433;border-radius:10px;overflow:hidden}
+.card-hdr{padding:14px 22px;border-bottom:1px solid #1e2433;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:#64748b;display:flex;align-items:center;gap:10px}
+.card-hdr .badge{background:#1e2433;color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
+table{width:100%;border-collapse:collapse}
+th{padding:10px 22px;text-align:left;font-size:11px;font-weight:500;color:#4b5563;background:#0d1117;letter-spacing:.3px}
+td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:middle}
+.state{display:flex;align-items:center;gap:7px}
+.sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.s-running{background:#22c55e;box-shadow:0 0 5px #22c55e55}
+.s-idle{background:#374151}
+.s-spawning{background:#f59e0b;animation:blink 1s ease-in-out infinite}
+.s-stopping{background:#ef4444}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.mono{font-family:'SF Mono',ui-monospace,monospace;font-size:12px;color:#a5b4fc}
+.muted{color:#64748b;font-size:12px}
+.err-msg{color:#f87171;font-size:11px;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
+.btn{padding:5px 12px;border-radius:5px;border:none;cursor:pointer;font-size:11px;font-weight:500;transition:all .12s;line-height:1.4}
+.btn-start{background:#14532d;color:#4ade80}.btn-start:hover{background:#166534}
+.btn-stop{background:#7f1d1d;color:#f87171}.btn-stop:hover{background:#991b1b}
+.btn-del{background:transparent;color:#ef4444;border:1px solid #3f1515;font-size:11px}.btn-del:hover{background:#3f1515}
+.btn-edit{background:transparent;color:#94a3b8;border:1px solid #1e2433;font-size:11px;margin-right:6px}.btn-edit:hover{background:#1e2433}
+.btn-primary{background:#3730a3;color:#c7d2fe}.btn-primary:hover{background:#4338ca}
+.btn-cancel{background:transparent;color:#64748b;border:1px solid #1e2433}.btn-cancel:hover{background:#1e2433}
+.add-row{padding:14px 22px;border-top:1px solid #1e2433}
+.modal-bg{display:none;position:fixed;inset:0;background:#00000090;z-index:50;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#161b27;border:1px solid #1e2433;border-radius:10px;padding:22px;width:440px;max-width:95vw}
+.modal h3{font-size:14px;font-weight:600;margin-bottom:16px;color:#e2e8f0}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:11px;color:#64748b;margin-bottom:5px;font-weight:500;letter-spacing:.3px}
+.field input{width:100%;padding:9px 11px;background:#0d1117;border:1px solid #1e2433;border-radius:6px;color:#e2e8f0;font-size:13px;outline:none;transition:border .12s}
+.field input:focus{border-color:#4f46e5}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.empty{color:#4b5563;text-align:center;padding:32px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">mcprt</span>
+  <span class="conn"><span class="dot" id="conn-dot"></span><span id="conn-txt">connecting…</span></span>
+</header>
+<main>
+  <div class="card" id="servers-card">
+    <div class="card-hdr">Servers <span class="badge" id="server-count">—</span></div>
+    <table>
+      <thead><tr><th>Name</th><th>State</th><th>Port</th><th>Requests</th><th>Uptime</th><th></th></tr></thead>
+      <tbody id="servers-body"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card">
+    <div class="card-hdr">Secrets <span class="badge" id="secret-count">—</span></div>
+    <table>
+      <thead><tr><th>Key</th><th style="width:180px;text-align:right">Actions</th></tr></thead>
+      <tbody id="secrets-body"><tr><td colspan="2" class="empty">Loading…</td></tr></tbody>
+    </table>
+    <div class="add-row">
+      <button class="btn btn-primary" onclick="openAdd()">+ Add Secret</button>
+    </div>
+  </div>
+</main>
+
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h3 id="modal-title">Add Secret</h3>
+    <div class="field"><label>KEY NAME</label><input id="f-key" placeholder="CLOUDFLARE_API_TOKEN" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label>VALUE</label><input id="f-val" type="password" placeholder="paste secret value" autocomplete="new-password"></div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSecret()">Save to Keychain</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const KEY = '{{.APIKey}}';
+const H = Object.assign({'Content-Type':'application/json'}, KEY ? {'Authorization':'Bearer '+KEY} : {});
+
+async function call(method, path, body) {
+  const r = await fetch(path, {method, headers: H, body: body != null ? JSON.stringify(body) : undefined});
+  if (r.status === 204) return null;
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+function stateClass(s) {
+  return {running:'s-running',idle:'s-idle',spawning:'s-spawning',stopping:'s-stopping'}[s]||'s-idle';
+}
+
+function uptime(ts) {
+  if (!ts || ts.startsWith('0001')) return '—';
+  const s = Math.floor((Date.now() - new Date(ts))/1000);
+  if (s < 60) return s+'s';
+  if (s < 3600) return Math.floor(s/60)+'m';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
+}
+
+async function loadServers() {
+  try {
+    const data = await call('GET','/_api/servers');
+    const dot = document.getElementById('conn-dot');
+    const txt = document.getElementById('conn-txt');
+    dot.classList.remove('err'); txt.textContent = 'connected';
+    const list = (Array.isArray(data) ? data : []).sort((a,b)=>a.name.localeCompare(b.name));
+    document.getElementById('server-count').textContent = list.length;
+    const tb = document.getElementById('servers-body');
+    if (!list.length) { tb.innerHTML = '<tr><td colspan="6" class="empty">No servers configured</td></tr>'; return; }
+    tb.innerHTML = list.map(s => `<tr>
+      <td class="mono">${s.name}</td>
+      <td><div class="state"><div class="sdot ${stateClass(s.state)}"></div>${s.state}</div>
+          ${s.last_error?`<div class="err-msg" title="${s.last_error}">${s.last_error}</div>`:''}</td>
+      <td class="mono">${s.port||'—'}</td>
+      <td class="muted">${s.requests||0}</td>
+      <td class="muted">${uptime(s.last_spawn)}</td>
+      <td style="text-align:right">${(s.state==='running'||s.state==='spawning')
+        ?`<button class="btn btn-stop" onclick="stopSrv('${s.name}')">Stop</button>`
+        :`<button class="btn btn-start" onclick="startSrv('${s.name}')">Start</button>`}</td>
+    </tr>`).join('');
+  } catch(e) {
+    document.getElementById('conn-dot').classList.add('err');
+    document.getElementById('conn-txt').textContent = 'disconnected';
+  }
+}
+
+async function loadSecrets() {
+  try {
+    const keys = await call('GET','/_api/secrets') || [];
+    document.getElementById('secret-count').textContent = keys.length;
+    const tb = document.getElementById('secrets-body');
+    if (!keys.length) { tb.innerHTML = '<tr><td colspan="2" class="empty">No secrets stored</td></tr>'; return; }
+    tb.innerHTML = keys.map(k => `<tr>
+      <td class="mono">${k}</td>
+      <td style="text-align:right">
+        <button class="btn btn-edit" onclick="openEdit('${k}')">Edit</button>
+        <button class="btn btn-del" onclick="delSecret('${k}')">Delete</button>
+      </td>
+    </tr>`).join('');
+  } catch(e) {}
+}
+
+async function startSrv(n) { try { await call('POST',`/_api/servers/${n}/start`); } catch(e) { alert(e.message); } loadServers(); }
+async function stopSrv(n) { try { await call('POST',`/_api/servers/${n}/stop`); } catch(e) { alert(e.message); } loadServers(); }
+
+// Sentinel stored in the password field when editing an existing secret.
+// Renders as dots to show "something is here". If the user saves without
+// changing the field, we skip the API call and close the modal.
+const EXISTING_SENTINEL = '__mcprt_keep_existing__';
+
+async function delSecret(k) {
+  if (!confirm(`Delete "${k}"?`)) return;
+  try { await call('DELETE',`/_api/secrets/${k}`); loadSecrets(); } catch(e) { alert(e.message); }
+}
+
+function openAdd() {
+  document.getElementById('modal-title').textContent = 'Add Secret';
+  document.getElementById('f-key').value = '';
+  document.getElementById('f-key').readOnly = false;
+  document.getElementById('f-val').value = '';
+  document.getElementById('f-val').placeholder = 'paste secret value';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(()=>document.getElementById('f-key').focus(), 50);
+}
+
+function openEdit(k) {
+  document.getElementById('modal-title').textContent = `Edit "${k}"`;
+  document.getElementById('f-key').value = k;
+  document.getElementById('f-key').readOnly = true;
+  // Pre-fill with sentinel so dots appear — signals a value is already stored.
+  const val = document.getElementById('f-val');
+  val.value = EXISTING_SENTINEL;
+  val.placeholder = 'type to replace existing value';
+  // Clear sentinel only when the user actually types or pastes (not on programmatic focus).
+  val.addEventListener('beforeinput', () => {
+    if (val.value === EXISTING_SENTINEL) val.value = '';
+  }, {once: true});
+  document.getElementById('modal').classList.add('open');
+  setTimeout(()=>val.focus(), 50);
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+  // Reset field state for next open.
+  document.getElementById('f-val').placeholder = 'paste secret value';
+}
+
+async function saveSecret() {
+  const k = document.getElementById('f-key').value.trim();
+  const v = document.getElementById('f-val').value;
+  if (!k) { alert('Key name is required'); return; }
+  // User closed without changing — keep existing value.
+  if (v === EXISTING_SENTINEL) { closeModal(); return; }
+  if (!v) { alert('Value is required'); return; }
+  try { await call('PUT',`/_api/secrets/${k}`,{value:v}); closeModal(); loadSecrets(); }
+  catch(e) { alert(e.message); }
+}
+
+document.getElementById('modal').addEventListener('click', e => { if (e.target===document.getElementById('modal')) closeModal(); });
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
+
+loadServers();
+loadSecrets();
+setInterval(loadServers, 3000);
+</script>
+</body>
+</html>

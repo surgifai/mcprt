@@ -15,5 +15,7 @@ No idle timeouts. No always-on resident processes. STDIO transport refused.`,
 	root.AddCommand(validateCmd())
 	root.AddCommand(serveCmd())
 	root.AddCommand(statusCmd())
+	root.AddCommand(secretsCmd())
+	root.AddCommand(trayCmd())
 	return root
 }
