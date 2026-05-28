@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+const (
+	headerContentType = "Content-Type"
+	mediaTypeJSON     = "application/json"
+)
+
 // ServerStatus is the JSON representation of a supervised server.
 type ServerStatus struct {
 	Name         string    `json:"name"`
@@ -103,12 +108,12 @@ func (h *Handler) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (h *Handler) health(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, mediaTypeJSON)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (h *Handler) listServers(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, mediaTypeJSON)
 	json.NewEncoder(w).Encode(h.ctrl.Servers())
 }
 
@@ -139,7 +144,7 @@ func (h *Handler) listSecrets(w http.ResponseWriter, r *http.Request) {
 	if keys == nil {
 		keys = []string{}
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(headerContentType, mediaTypeJSON)
 	json.NewEncoder(w).Encode(keys)
 }
 

@@ -24,6 +24,8 @@ import (
 	"github.com/surgifai-com/mcprt/pkg/supervisor"
 )
 
+const mcprtConfigDir = ".config"
+
 // Runtime is the central coordinator.
 type Runtime struct {
 	cfg          *manifest.Config
@@ -62,43 +64,16 @@ func New(opts Options) (*Runtime, error) {
 		logger = slog.Default()
 	}
 	if opts.ManifestPath == "" {
-		home, _ := os.UserHomeDir()
-		opts.ManifestPath = filepath.Join(home, ".config", "mcprt", "mcprt.toml")
+		opts.ManifestPath = defaultConfigPath("mcprt.toml")
 	}
 
-	cfg, err := manifest.Load(opts.ManifestPath)
+	cfg, store, err := loadConfig(opts.ManifestPath, logger)
 	if err != nil {
 		return nil, err
 	}
 
-	// Load secrets from Keychain, then overlay any secrets_file values for gaps.
-	store, vars, err := loadSecrets(cfg, logger)
-	if err != nil {
-		// Non-fatal: log and continue with no secrets. Servers using ${VAR}
-		// will start with unresolved placeholders, which is preferable to refusing to start.
-		logger.Warn("secrets store unavailable; ${VAR} substitution skipped", "err", err)
-		vars = map[string]string{}
-	}
-	if missing := manifest.ExpandVars(cfg, vars); len(missing) > 0 {
-		for _, k := range missing {
-			logger.Warn("unresolved secret reference", "var", k,
-				"hint", "run: mcprt secrets set "+k+" <value>")
-		}
-	}
-
-	vv := policy.Validate(cfg)
-	if policy.HasErrors(vv) {
-		for _, v := range vv {
-			if v.Severity == policy.SeverityError {
-				logger.Error("policy violation", "rule", v.Rule, "server", v.Server, "msg", v.Message)
-			}
-		}
-		return nil, fmt.Errorf("manifest has policy errors — see above")
-	}
-	for _, v := range vv {
-		if v.Severity == policy.SeverityWarning {
-			logger.Warn("policy warning", "rule", v.Rule, "server", v.Server, "msg", v.Message)
-		}
+	if err := validateConfigPolicy(cfg, logger, "policy violation", "policy warning"); err != nil {
+		return nil, err
 	}
 
 	base := opts.BasePort
@@ -147,14 +122,56 @@ func New(opts Options) (*Runtime, error) {
 	return r, nil
 }
 
+func defaultConfigPath(filename string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, mcprtConfigDir, "mcprt", filename)
+}
+
+func loadConfig(path string, logger *slog.Logger) (*manifest.Config, *secrets.Store, error) {
+	cfg, err := manifest.Load(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	store, vars, err := loadSecrets(cfg, logger)
+	if err != nil {
+		logger.Warn("secrets store unavailable; ${VAR} substitution skipped", "err", err)
+		vars = map[string]string{}
+	}
+	logMissingVars(manifest.ExpandVars(cfg, vars), logger, "unresolved secret reference")
+	return cfg, store, nil
+}
+
+func logMissingVars(missing []string, logger *slog.Logger, msg string) {
+	for _, k := range missing {
+		logger.Warn(msg, "var", k, "hint", "run: mcprt secrets set "+k+" <value>")
+	}
+}
+
+func validateConfigPolicy(cfg *manifest.Config, logger *slog.Logger, errorMsg, warningMsg string) error {
+	vv := policy.Validate(cfg)
+	if policy.HasErrors(vv) {
+		for _, v := range vv {
+			if v.Severity == policy.SeverityError {
+				logger.Error(errorMsg, "rule", v.Rule, "server", v.Server, "msg", v.Message)
+			}
+		}
+		return fmt.Errorf("manifest has policy errors — see above")
+	}
+	for _, v := range vv {
+		if v.Severity == policy.SeverityWarning {
+			logger.Warn(warningMsg, "rule", v.Rule, "server", v.Server, "msg", v.Message)
+		}
+	}
+	return nil
+}
+
 // secretsPath returns the resolved secrets file path: explicit config value or
 // the default ~/.config/mcprt/secrets.env.
 func secretsPath(cfg *manifest.Config) string {
 	if cfg.Runtime.SecretsFile != "" {
 		return cfg.Runtime.SecretsFile
 	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "mcprt", "secrets.env")
+	return defaultConfigPath("secrets.env")
 }
 
 // loadSecrets opens the secrets file and returns the store + all resolved vars.
@@ -278,34 +295,14 @@ func (r *Runtime) AllStats() []supervisor.Stats {
 // --- internal ---
 
 func (r *Runtime) registerServer(name string, spec manifest.ServerSpec, gracePeriod time.Duration, logDir string) {
-	// Remote upstream: no process to supervise, no port, no refcounting.
 	if spec.UpstreamURL != "" {
-		r.handler.Register(name, &proxy.ServerEntry{
-			UpstreamURL: spec.UpstreamURL,
-			Headers:     spec.Headers,
-		})
+		r.registerRemoteServer(name, spec)
 		return
 	}
 
 	port := r.allocPort(name, spec)
 
-	ref := proxy.NewRefCounter(gracePeriod, func() {
-		r.mu.RLock()
-		sup, ok := r.sups[name]
-		r.mu.RUnlock()
-		if !ok {
-			return
-		}
-		if sup.CurrentState() == supervisor.StateRunning {
-			r.logger.Info("refcount debounce expired, stopping server", "server", name)
-			if err := sup.Stop(); err != nil {
-				r.logger.Error("stop error", "server", name, "err", err)
-			}
-			if r.OnExit != nil {
-				go r.OnExit(name)
-			}
-		}
-	})
+	ref := r.newRefCounter(name, gracePeriod)
 
 	var healthTimeout time.Duration
 	if spec.HealthTimeout != "" {
@@ -332,6 +329,31 @@ func (r *Runtime) registerServer(name string, spec manifest.ServerSpec, gracePer
 	r.mu.Unlock()
 
 	r.handler.Register(name, &proxy.ServerEntry{Sup: sup, Ref: ref, SpawnTimeout: healthTimeout})
+}
+
+func (r *Runtime) registerRemoteServer(name string, spec manifest.ServerSpec) {
+	r.handler.Register(name, &proxy.ServerEntry{
+		UpstreamURL: spec.UpstreamURL,
+		Headers:     spec.Headers,
+	})
+}
+
+func (r *Runtime) newRefCounter(name string, gracePeriod time.Duration) *proxy.RefCounter {
+	return proxy.NewRefCounter(gracePeriod, func() {
+		r.mu.RLock()
+		sup, ok := r.sups[name]
+		r.mu.RUnlock()
+		if !ok || sup.CurrentState() != supervisor.StateRunning {
+			return
+		}
+		r.logger.Info("refcount debounce expired, stopping server", "server", name)
+		if err := sup.Stop(); err != nil {
+			r.logger.Error("stop error", "server", name, "err", err)
+		}
+		if r.OnExit != nil {
+			go r.OnExit(name)
+		}
+	})
 }
 
 func (r *Runtime) allocPort(name string, spec manifest.ServerSpec) int {
@@ -401,26 +423,11 @@ func (r *Runtime) reload() {
 			r.logger.Warn("hot-reload: secrets read failed", "err", err)
 			vars = map[string]string{}
 		}
-		if missing := manifest.ExpandVars(cfg, vars); len(missing) > 0 {
-			for _, k := range missing {
-				r.logger.Warn("hot-reload: unresolved secret reference", "var", k)
-			}
-		}
+		logMissingVars(manifest.ExpandVars(cfg, vars), r.logger, "hot-reload: unresolved secret reference")
 	}
 
-	vv := policy.Validate(cfg)
-	if policy.HasErrors(vv) {
-		for _, v := range vv {
-			if v.Severity == policy.SeverityError {
-				r.logger.Error("hot-reload: policy error — refusing reload", "rule", v.Rule, "server", v.Server, "msg", v.Message)
-			}
-		}
+	if validateConfigPolicy(cfg, r.logger, "hot-reload: policy error — refusing reload", "hot-reload: policy warning") != nil {
 		return
-	}
-	for _, v := range vv {
-		if v.Severity == policy.SeverityWarning {
-			r.logger.Warn("hot-reload: policy warning", "rule", v.Rule, "server", v.Server, "msg", v.Message)
-		}
 	}
 
 	gracePeriod, _ := time.ParseDuration(cfg.Runtime.GracePeriod)
@@ -435,45 +442,51 @@ func (r *Runtime) reload() {
 	}
 	r.mu.RUnlock()
 
-	// Added / mutated servers.
-	for name, spec := range cfg.Server {
-		r.mu.RLock()
-		sup, alreadyExists := r.sups[name]
-		r.mu.RUnlock()
-
-		if !alreadyExists {
-			r.logger.Info("hot-reload: adding server", "server", name)
-			r.registerServer(name, spec, gracePeriod, "")
-		} else {
-			// Mutated: only restart if currently running.
-			if sup.CurrentState() == supervisor.StateRunning {
-				r.logger.Info("hot-reload: spec changed, restarting running server", "server", name)
-				_ = sup.Stop()
-				sup.UpdateSpec(spec)
-				// Server will restart on next client connection (refcount-driven).
-			} else {
-				sup.UpdateSpec(spec)
-			}
-			delete(existing, name)
-		}
-	}
-
-	// Removed servers: stop and deregister.
-	for name := range existing {
-		r.logger.Info("hot-reload: removing server", "server", name)
-		r.mu.RLock()
-		sup := r.sups[name]
-		r.mu.RUnlock()
-		_ = sup.Stop()
-		r.mu.Lock()
-		delete(r.sups, name)
-		delete(r.refs, name)
-		r.mu.Unlock()
-		r.handler.Deregister(name)
-	}
+	r.applyServerConfig(cfg, existing, gracePeriod)
 
 	r.mu.Lock()
 	r.cfg = cfg
 	r.mu.Unlock()
 	r.logger.Info("hot-reload: complete")
+}
+
+func (r *Runtime) applyServerConfig(cfg *manifest.Config, existing map[string]bool, gracePeriod time.Duration) {
+	for name, spec := range cfg.Server {
+		if r.applyServerSpec(name, spec, gracePeriod) {
+			delete(existing, name)
+		}
+	}
+	for name := range existing {
+		r.removeServer(name)
+	}
+}
+
+func (r *Runtime) applyServerSpec(name string, spec manifest.ServerSpec, gracePeriod time.Duration) bool {
+	r.mu.RLock()
+	sup, alreadyExists := r.sups[name]
+	r.mu.RUnlock()
+	if !alreadyExists {
+		r.logger.Info("hot-reload: adding server", "server", name)
+		r.registerServer(name, spec, gracePeriod, "")
+		return false
+	}
+	if sup.CurrentState() == supervisor.StateRunning {
+		r.logger.Info("hot-reload: spec changed, restarting running server", "server", name)
+		_ = sup.Stop()
+	}
+	sup.UpdateSpec(spec)
+	return true
+}
+
+func (r *Runtime) removeServer(name string) {
+	r.logger.Info("hot-reload: removing server", "server", name)
+	r.mu.RLock()
+	sup := r.sups[name]
+	r.mu.RUnlock()
+	_ = sup.Stop()
+	r.mu.Lock()
+	delete(r.sups, name)
+	delete(r.refs, name)
+	r.mu.Unlock()
+	r.handler.Deregister(name)
 }

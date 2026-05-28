@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -34,8 +33,7 @@ The secrets file path is resolved in this order:
 					cfgPath = cfgFlag.Value.String()
 				}
 				if cfgPath == "" {
-					home, _ := os.UserHomeDir()
-					cfgPath = filepath.Join(home, ".config", "mcprt", "mcprt.toml")
+					cfgPath = defaultConfigPath("mcprt.toml")
 				}
 				if cfg, err := manifest.Load(cfgPath); err == nil && cfg.Runtime.SecretsFile != "" {
 					secretsFile = cfg.Runtime.SecretsFile
@@ -45,9 +43,7 @@ The secrets file path is resolved in this order:
 		},
 	}
 
-	home, _ := os.UserHomeDir()
-	defaultPath := filepath.Join(home, ".config", "mcprt", "secrets.env")
-	cmd.PersistentFlags().StringVar(&secretsFile, "secrets-file", defaultPath, "path to secrets file")
+	cmd.PersistentFlags().StringVar(&secretsFile, "secrets-file", defaultConfigPath("secrets.env"), "path to secrets file")
 
 	openStore := func() (*secrets.Store, error) {
 		store, err := secrets.Open(secretsFile)
@@ -142,8 +138,7 @@ The secrets file path is resolved in this order:
 				cfgPath = cfgFlag.Value.String()
 			}
 			if cfgPath == "" {
-				home, _ := os.UserHomeDir()
-				cfgPath = filepath.Join(home, ".config", "mcprt", "mcprt.toml")
+				cfgPath = defaultConfigPath("mcprt.toml")
 			}
 			cfg, err := manifest.Load(cfgPath)
 			if err != nil {

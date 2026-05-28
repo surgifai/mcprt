@@ -17,7 +17,7 @@ main{padding:28px 32px;display:grid;gap:24px;max-width:1100px}
 .card-hdr{padding:14px 22px;border-bottom:1px solid #1e2433;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.6px;color:#64748b;display:flex;align-items:center;gap:10px}
 .card-hdr .badge{background:#1e2433;color:#94a3b8;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500}
 table{width:100%;border-collapse:collapse}
-th{padding:10px 22px;text-align:left;font-size:11px;font-weight:500;color:#4b5563;background:#0d1117;letter-spacing:.3px}
+th{padding:10px 22px;text-align:left;font-size:11px;font-weight:500;color:#94a3b8;background:#0d1117;letter-spacing:.3px}
 td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:middle}
 .state{display:flex;align-items:center;gap:7px}
 .sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
@@ -31,7 +31,7 @@ td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:
 .err-msg{color:#f87171;font-size:11px;max-width:280px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
 .btn{padding:5px 12px;border-radius:5px;border:none;cursor:pointer;font-size:11px;font-weight:500;transition:all .12s;line-height:1.4}
 .btn-start{background:#14532d;color:#4ade80}.btn-start:hover{background:#166534}
-.btn-stop{background:#7f1d1d;color:#f87171}.btn-stop:hover{background:#991b1b}
+.btn-stop{background:#7f1d1d;color:#fee2e2}.btn-stop:hover{background:#991b1b}
 .btn-del{background:transparent;color:#ef4444;border:1px solid #3f1515;font-size:11px}.btn-del:hover{background:#3f1515}
 .btn-edit{background:transparent;color:#94a3b8;border:1px solid #1e2433;font-size:11px;margin-right:6px}.btn-edit:hover{background:#1e2433}
 .btn-primary{background:#3730a3;color:#c7d2fe}.btn-primary:hover{background:#4338ca}
@@ -77,8 +77,8 @@ td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:
 <div class="modal-bg" id="modal">
   <div class="modal">
     <h3 id="modal-title">Add Secret</h3>
-    <div class="field"><label>KEY NAME</label><input id="f-key" placeholder="CLOUDFLARE_API_TOKEN" autocomplete="off" spellcheck="false"></div>
-    <div class="field"><label>VALUE</label><input id="f-val" type="password" placeholder="paste secret value" autocomplete="new-password"></div>
+    <div class="field"><label for="f-key">KEY NAME</label><input id="f-key" placeholder="CLOUDFLARE_API_TOKEN" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label for="f-val">VALUE</label><input id="f-val" type="password" placeholder="paste secret value" autocomplete="new-password"></div>
     <div class="modal-actions">
       <button class="btn btn-cancel" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="saveSecret()">Save to Keychain</button>
@@ -88,10 +88,11 @@ td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:
 
 <script>
 const KEY = '{{.APIKey}}';
-const H = Object.assign({'Content-Type':'application/json'}, KEY ? {'Authorization':'Bearer '+KEY} : {});
+const H = {'Content-Type':'application/json', ...(KEY ? {'Authorization':'Bearer '+KEY} : {})};
 
 async function call(method, path, body) {
-  const r = await fetch(path, {method, headers: H, body: body != null ? JSON.stringify(body) : undefined});
+  const requestBody = body == null ? undefined : JSON.stringify(body);
+  const r = await fetch(path, {method, headers: H, body: requestBody});
   if (r.status === 204) return null;
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -138,7 +139,8 @@ async function loadServers() {
         ?`<button class="btn btn-stop" onclick="stopSrv('${s.name}')">Stop</button>`
         :`<button class="btn btn-start" onclick="startSrv('${s.name}')">Start</button>`}</td>
     </tr>`).join('');
-  } catch(e) {
+  } catch(err) {
+    console.warn('server refresh failed', err);
     document.getElementById('conn-dot').classList.add('err');
     document.getElementById('conn-txt').textContent = 'disconnected';
   }
@@ -157,7 +159,9 @@ async function loadSecrets() {
         <button class="btn btn-del" onclick="delSecret('${k}')">Delete</button>
       </td>
     </tr>`).join('');
-  } catch(e) {}
+  } catch(err) {
+    console.warn('secret refresh failed', err);
+  }
 }
 
 async function startSrv(n) { try { await call('POST',`/_api/servers/${n}/start`); } catch(e) { alert(e.message); } loadServers(); }
@@ -219,9 +223,9 @@ async function saveSecret() {
 document.getElementById('modal').addEventListener('click', e => { if (e.target===document.getElementById('modal')) closeModal(); });
 document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
 
-loadServers();
-loadSecrets();
-setInterval(loadServers, 3000);
+void loadServers();
+void loadSecrets();
+setInterval(() => { void loadServers(); }, 3000);
 </script>
 </body>
 </html>

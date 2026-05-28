@@ -20,8 +20,8 @@ import (
 type ServerEntry struct {
 	Sup          *supervisor.Supervisor
 	Ref          *RefCounter
-	SpawnTimeout time.Duration    // overrides Handler.spawnTimeout for this server
-	UpstreamURL  string           // remote HTTP/HTTPS base URL; when set Sup is nil
+	SpawnTimeout time.Duration     // overrides Handler.spawnTimeout for this server
+	UpstreamURL  string            // remote HTTP/HTTPS base URL; when set Sup is nil
 	Headers      map[string]string // injected into every proxied request
 	name         string
 	logger       *slog.Logger
@@ -86,67 +86,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Remote upstream passthrough: skip all process lifecycle, forward directly.
 	if entry.UpstreamURL != "" {
-		target, err := url.Parse(entry.UpstreamURL)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("mcprt: invalid upstream URL for %q: %v", name, err), http.StatusInternalServerError)
-			return
-		}
-		rp := &httputil.ReverseProxy{
-			Director: func(req *http.Request) {
-				req.URL.Scheme = target.Scheme
-				req.URL.Host = target.Host
-				req.URL.Path = tail
-				req.Host = target.Host
-				for k, v := range entry.Headers {
-					req.Header.Set(k, v)
-				}
-			},
-			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-				entry.logger.Error("upstream error", "err", err)
-				http.Error(w, fmt.Sprintf("mcprt: upstream %q error: %v", name, err), http.StatusBadGateway)
-			},
-		}
-		rp.ServeHTTP(w, r)
+		h.serveRemoteUpstream(w, r, entry, name, tail)
 		return
 	}
 
-	// If the server is idle, spawn it and wait for it to become healthy.
-	if entry.Sup.CurrentState() == supervisor.StateIdle {
-		entry.logger.Info("cold start triggered", "method", r.Method, "path", tail)
-		spawnTimeout := h.spawnTimeout
-		if entry.SpawnTimeout > 0 {
-			spawnTimeout = entry.SpawnTimeout
-		}
-		ctx, cancel := context.WithTimeout(r.Context(), spawnTimeout)
-		defer cancel()
-		if err := entry.Sup.Start(ctx); err != nil {
-			entry.logger.Error("spawn failed", "err", err)
-			entry.Sup.IncrErrors()
-			http.Error(w, fmt.Sprintf("mcprt: server %q failed to start: %v", name, err), http.StatusServiceUnavailable)
-			return
-		}
+	if !h.ensureStarted(w, r, entry, name, tail) {
+		return
 	}
+	release := trackRefcount(r, entry)
+	defer release()
 
-	// SSE connections are the primary refcount signal.
-	isSSE := isSSERequest(r)
-	sessionID := r.Header.Get("Mcp-Session-Id")
-
-	if isSSE {
-		entry.Ref.Acquire()
-		defer entry.Ref.Release()
-	} else if sessionID != "" && !isSSE {
-		// Ephemeral session: held until the underlying TCP connection closes.
-		// We use CloseNotifier's replacement: context cancellation on request done.
-		done := entry.Ref.TrackEphemeral(sessionID)
-		go func() {
-			<-r.Context().Done()
-			done()
-		}()
-	}
-
-	// Rewrite path: strip /<server-name> prefix.
 	r2 := r.Clone(r.Context())
 	r2.URL.Path = tail
 	if r2.URL.RawPath != "" {
@@ -158,20 +108,85 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Host:   fmt.Sprintf("127.0.0.1:%d", entry.Sup.Port()),
 	}
 
+	entry.Sup.IncrRequests()
+	localReverseProxy(target, entry, name, r.Host).ServeHTTP(w, r2)
+}
+
+func (h *Handler) serveRemoteUpstream(w http.ResponseWriter, r *http.Request, entry *ServerEntry, name, tail string) {
+	target, err := url.Parse(entry.UpstreamURL)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("mcprt: invalid upstream URL for %q: %v", name, err), http.StatusInternalServerError)
+		return
+	}
+	remoteReverseProxy(target, entry, name, tail).ServeHTTP(w, r)
+}
+
+func remoteReverseProxy(target *url.URL, entry *ServerEntry, name, tail string) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.URL.Path = tail
+			req.Host = target.Host
+			for k, v := range entry.Headers {
+				req.Header.Set(k, v)
+			}
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			entry.logger.Error("upstream error", "err", err)
+			http.Error(w, fmt.Sprintf("mcprt: upstream %q error: %v", name, err), http.StatusBadGateway)
+		},
+	}
+}
+
+func (h *Handler) ensureStarted(w http.ResponseWriter, r *http.Request, entry *ServerEntry, name, tail string) bool {
+	if entry.Sup.CurrentState() != supervisor.StateIdle {
+		return true
+	}
+	entry.logger.Info("cold start triggered", "method", r.Method, "path", tail)
+	ctx, cancel := context.WithTimeout(r.Context(), h.serverSpawnTimeout(entry))
+	defer cancel()
+	if err := entry.Sup.Start(ctx); err != nil {
+		entry.logger.Error("spawn failed", "err", err)
+		entry.Sup.IncrErrors()
+		http.Error(w, fmt.Sprintf("mcprt: server %q failed to start: %v", name, err), http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
+func (h *Handler) serverSpawnTimeout(entry *ServerEntry) time.Duration {
+	if entry.SpawnTimeout > 0 {
+		return entry.SpawnTimeout
+	}
+	return h.spawnTimeout
+}
+
+func trackRefcount(r *http.Request, entry *ServerEntry) func() {
+	isSSE := isSSERequest(r)
+	sessionID := r.Header.Get("Mcp-Session-Id")
+	if isSSE {
+		entry.Ref.Acquire()
+		return entry.Ref.Release
+	}
+	if sessionID == "" {
+		return func() {}
+	}
+	done := entry.Ref.TrackEphemeral(sessionID)
+	go func() {
+		<-r.Context().Done()
+		done()
+	}()
+	return func() {}
+}
+
+func localReverseProxy(target *url.URL, entry *ServerEntry, name, reqHost string) *httputil.ReverseProxy {
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
 		entry.logger.Error("upstream error", "err", err)
 		entry.Sup.IncrErrors()
 		http.Error(w, fmt.Sprintf("mcprt: upstream %q error: %v", name, err), http.StatusBadGateway)
 	}
-
-	// Rewrite redirect Location headers from upstream so they include the
-	// /<server-name> path prefix that mcprt mounts upstream at. Upstreams that
-	// return a 301/302/307/308 with Location: /some/path or
-	// Location: http://<request-host>/some/path are unaware of the prefix and
-	// would otherwise redirect the client to a path that bypasses the routing.
-	// Cross-host redirects are passed through unmodified.
-	reqHost := r.Host
 	rp.ModifyResponse = func(resp *http.Response) error {
 		loc := resp.Header.Get("Location")
 		if loc == "" {
@@ -183,9 +198,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}
-
-	entry.Sup.IncrRequests()
-	rp.ServeHTTP(w, r2)
+	return rp
 }
 
 // rewriteLocation prepends "/<serverName>" to the path of a Location header

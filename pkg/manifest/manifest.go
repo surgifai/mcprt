@@ -13,7 +13,7 @@ import (
 
 // Config is the top-level mcprt.toml structure.
 type Config struct {
-	Runtime RuntimeConfig        `toml:"runtime"`
+	Runtime RuntimeConfig         `toml:"runtime"`
 	Server  map[string]ServerSpec `toml:"server"`
 }
 
@@ -32,13 +32,13 @@ type RuntimeConfig struct {
 
 // ServerSpec defines a single managed MCP server.
 type ServerSpec struct {
-	Exec              []string          `toml:"exec"`
-	Args              []string          `toml:"args"`
-	Env               map[string]string `toml:"env"`
-	HealthPath        string            `toml:"health_path"`
-	WorkingDir        string            `toml:"working_dir"`
-	AllowExternal     bool              `toml:"allow_external"`
-	AcknowledgedStdioSafe bool          `toml:"acknowledged_stdio_safe"`
+	Exec                  []string          `toml:"exec"`
+	Args                  []string          `toml:"args"`
+	Env                   map[string]string `toml:"env"`
+	HealthPath            string            `toml:"health_path"`
+	WorkingDir            string            `toml:"working_dir"`
+	AllowExternal         bool              `toml:"allow_external"`
+	AcknowledgedStdioSafe bool              `toml:"acknowledged_stdio_safe"`
 	// Port pins the upstream port instead of using dynamic allocation.
 	// Use this for servers that read their port from a config file rather
 	// than a CLI argument. When set, ${MCPRT_PORT} substitution still works
@@ -62,9 +62,9 @@ type ServerSpec struct {
 	// Example:
 	//   upstream_url = "https://recon.surgifai.co"
 	//   headers = { "CF-Access-Client-Id" = "...", "CF-Access-Client-Secret" = "..." }
-	UpstreamURL string            `toml:"upstream_url"`
+	UpstreamURL string `toml:"upstream_url"`
 	// Headers are injected into every proxied request (e.g. CF Access service token).
-	Headers     map[string]string `toml:"headers"`
+	Headers map[string]string `toml:"headers"`
 }
 
 // DefaultRuntimeConfig returns conservative defaults.
@@ -122,7 +122,16 @@ func ExpandVars(cfg *Config, vars map[string]string) []string {
 	seen := map[string]bool{}
 	var missing []string
 
-	expand := func(s string) string {
+	expand := varExpander(vars, seen, &missing)
+	cfg.Runtime.APIKey = expand(cfg.Runtime.APIKey)
+	for name, spec := range cfg.Server {
+		cfg.Server[name] = expandServerSpec(spec, expand)
+	}
+	return missing
+}
+
+func varExpander(vars map[string]string, seen map[string]bool, missing *[]string) func(string) string {
+	return func(s string) string {
 		return varPattern.ReplaceAllStringFunc(s, func(m string) string {
 			key := m[2 : len(m)-1]
 			if key == "MCPRT_PORT" {
@@ -133,31 +142,28 @@ func ExpandVars(cfg *Config, vars map[string]string) []string {
 			}
 			if !seen[key] {
 				seen[key] = true
-				missing = append(missing, key)
+				*missing = append(*missing, key)
 			}
 			return m
 		})
 	}
+}
 
-	cfg.Runtime.APIKey = expand(cfg.Runtime.APIKey)
-
-	for name, spec := range cfg.Server {
-		for i, e := range spec.Exec {
-			spec.Exec[i] = expand(e)
-		}
-		for i, a := range spec.Args {
-			spec.Args[i] = expand(a)
-		}
-		for k, v := range spec.Env {
-			spec.Env[k] = expand(v)
-		}
-		for k, v := range spec.Headers {
-			spec.Headers[k] = expand(v)
-		}
-		spec.UpstreamURL = expand(spec.UpstreamURL)
-		cfg.Server[name] = spec
+func expandServerSpec(spec ServerSpec, expand func(string) string) ServerSpec {
+	for i, e := range spec.Exec {
+		spec.Exec[i] = expand(e)
 	}
-	return missing
+	for i, a := range spec.Args {
+		spec.Args[i] = expand(a)
+	}
+	for k, v := range spec.Env {
+		spec.Env[k] = expand(v)
+	}
+	for k, v := range spec.Headers {
+		spec.Headers[k] = expand(v)
+	}
+	spec.UpstreamURL = expand(spec.UpstreamURL)
+	return spec
 }
 
 // FindVarRefs returns the unique set of ${VAR} placeholder names referenced
@@ -166,7 +172,16 @@ func FindVarRefs(cfg *Config) []string {
 	seen := map[string]bool{}
 	var refs []string
 
-	collect := func(s string) {
+	collect := varRefCollector(seen, &refs)
+	collect(cfg.Runtime.APIKey)
+	for _, spec := range cfg.Server {
+		collectServerRefs(spec, collect)
+	}
+	return refs
+}
+
+func varRefCollector(seen map[string]bool, refs *[]string) func(string) {
+	return func(s string) {
 		for _, m := range varPattern.FindAllStringSubmatch(s, -1) {
 			key := m[1]
 			if key == "MCPRT_PORT" {
@@ -174,28 +189,26 @@ func FindVarRefs(cfg *Config) []string {
 			}
 			if !seen[key] {
 				seen[key] = true
-				refs = append(refs, key)
+				*refs = append(*refs, key)
 			}
 		}
 	}
+}
 
-	collect(cfg.Runtime.APIKey)
-	for _, spec := range cfg.Server {
-		for _, e := range spec.Exec {
-			collect(e)
-		}
-		for _, a := range spec.Args {
-			collect(a)
-		}
-		for _, v := range spec.Env {
-			collect(v)
-		}
-		for _, v := range spec.Headers {
-			collect(v)
-		}
-		collect(spec.UpstreamURL)
+func collectServerRefs(spec ServerSpec, collect func(string)) {
+	for _, e := range spec.Exec {
+		collect(e)
 	}
-	return refs
+	for _, a := range spec.Args {
+		collect(a)
+	}
+	for _, v := range spec.Env {
+		collect(v)
+	}
+	for _, v := range spec.Headers {
+		collect(v)
+	}
+	collect(spec.UpstreamURL)
 }
 
 func expandHome(s string) string {

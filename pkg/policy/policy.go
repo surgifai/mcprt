@@ -20,8 +20,8 @@ const (
 
 // Violation describes a single policy breach.
 type Violation struct {
-	Server   string   // "" for runtime-level violations
-	Rule     string   // machine-readable rule ID
+	Server   string // "" for runtime-level violations
+	Rule     string // machine-readable rule ID
 	Severity Severity
 	Message  string
 }
@@ -68,123 +68,145 @@ func validateRuntime(cfg *manifest.Config) []Violation {
 func validateServer(name string, spec manifest.ServerSpec) []Violation {
 	var vv []Violation
 
-	// Remote upstream passthrough — no local process, no port, no STDIO concern.
 	if spec.UpstreamURL != "" {
 		return vv
 	}
 
-	// --- STDIO detection (hard error) ---
-
 	if len(spec.Exec) == 0 {
-		vv = append(vv, Violation{
-			Server: name, Rule: "server.exec.empty", Severity: SeverityError,
-			Message: "exec must have at least one element",
-		})
-		return vv // nothing more to check
+		return append(vv, emptyExecViolation(name))
 	}
 
 	binary := filepath.Base(spec.Exec[0])
-
-	// Executables that are process launchers, not HTTP servers.
-	stdioLaunchers := []string{"node", "npx", "python", "python3", "deno", "bun"}
-	for _, launcher := range stdioLaunchers {
-		if binary == launcher {
-			if !spec.AcknowledgedStdioSafe {
-				vv = append(vv, Violation{
-					Server: name, Rule: "server.stdio.launcher", Severity: SeverityError,
-					Message: fmt.Sprintf(
-						"exec uses %q — a process launcher that commonly wraps STDIO MCPs. "+
-							"If this binary genuinely starts an HTTP MCP server, set acknowledged_stdio_safe=true.",
-						binary,
-					),
-				})
-			} else {
-				vv = append(vv, Violation{
-					Server: name, Rule: "server.stdio.launcher.acknowledged", Severity: SeverityWarning,
-					Message: fmt.Sprintf("exec uses %q with acknowledged_stdio_safe=true — ensure it binds an HTTP port", binary),
-				})
-			}
-		}
-	}
-
-	// Known STDIO-wrapper package names in npx/uvx invocations.
-	stdioPackageFragments := []string{
-		"@modelcontextprotocol/server-",
-		"mcp-server-",
-		"-mcp-server",
-	}
 	allArgs := append(spec.Exec[1:], spec.Args...)
-	for _, arg := range allArgs {
-		for _, frag := range stdioPackageFragments {
-			if strings.Contains(arg, frag) && !spec.AcknowledgedStdioSafe {
-				vv = append(vv, Violation{
-					Server: name, Rule: "server.stdio.package", Severity: SeverityError,
-					Message: fmt.Sprintf(
-						"arg %q matches known STDIO MCP package pattern %q. "+
-							"If this package exposes an HTTP interface, set acknowledged_stdio_safe=true.",
-						arg, frag,
-					),
-				})
-			}
-		}
-	}
+	vv = append(vv, validateStdioLauncher(name, binary, spec.AcknowledgedStdioSafe)...)
+	vv = append(vv, validateStdioPackages(name, allArgs, spec.AcknowledgedStdioSafe)...)
 
-	// --- Port binding check ---
-	// A server that doesn't bind a port can't be reverse-proxied. We require
-	// either ${MCPRT_PORT} in args or a literal --port / -port flag.
 	if !hasPortBinding(spec) {
-		vv = append(vv, Violation{
-			Server: name, Rule: "server.no_port", Severity: SeverityError,
-			Message: "server args do not contain ${MCPRT_PORT} or a --port/--bind flag; " +
-				"mcprt cannot determine where to proxy requests",
-		})
+		vv = append(vv, noPortViolation(name))
 	}
+	vv = append(vv, validateHostRestriction(name, allArgs, spec.AllowExternal)...)
+	return vv
+}
 
-	// --- Host restriction ---
-	if !spec.AllowExternal {
-		// Check exec path doesn't bind 0.0.0.0 via obvious flag patterns.
-		for _, arg := range allArgs {
-			if arg == "0.0.0.0" || arg == "::0" {
-				vv = append(vv, Violation{
-					Server: name, Rule: "server.external_bind", Severity: SeverityError,
-					Message: fmt.Sprintf(
-						"arg %q binds all interfaces. Set allow_external=true if this is intentional.", arg,
-					),
-				})
-			}
+func emptyExecViolation(name string) Violation {
+	return Violation{
+		Server: name, Rule: "server.exec.empty", Severity: SeverityError,
+		Message: "exec must have at least one element",
+	}
+}
+
+func validateStdioLauncher(name, binary string, acknowledged bool) []Violation {
+	for _, launcher := range []string{"node", "npx", "python", "python3", "deno", "bun"} {
+		if binary != launcher {
+			continue
+		}
+		if acknowledged {
+			return []Violation{{
+				Server: name, Rule: "server.stdio.launcher.acknowledged", Severity: SeverityWarning,
+				Message: fmt.Sprintf("exec uses %q with acknowledged_stdio_safe=true — ensure it binds an HTTP port", binary),
+			}}
+		}
+		return []Violation{{
+			Server: name, Rule: "server.stdio.launcher", Severity: SeverityError,
+			Message: fmt.Sprintf(
+				"exec uses %q — a process launcher that commonly wraps STDIO MCPs. "+
+					"If this binary genuinely starts an HTTP MCP server, set acknowledged_stdio_safe=true.",
+				binary,
+			),
+		}}
+	}
+	return nil
+}
+
+func validateStdioPackages(name string, args []string, acknowledged bool) []Violation {
+	if acknowledged {
+		return nil
+	}
+	var vv []Violation
+	for _, arg := range args {
+		if frag, ok := matchingStdioPackageFragment(arg); ok {
+			vv = append(vv, Violation{
+				Server: name, Rule: "server.stdio.package", Severity: SeverityError,
+				Message: fmt.Sprintf(
+					"arg %q matches known STDIO MCP package pattern %q. "+
+						"If this package exposes an HTTP interface, set acknowledged_stdio_safe=true.",
+					arg, frag,
+				),
+			})
 		}
 	}
+	return vv
+}
 
+func matchingStdioPackageFragment(arg string) (string, bool) {
+	for _, frag := range []string{"@modelcontextprotocol/server-", "mcp-server-", "-mcp-server"} {
+		if strings.Contains(arg, frag) {
+			return frag, true
+		}
+	}
+	return "", false
+}
+
+func noPortViolation(name string) Violation {
+	return Violation{
+		Server: name, Rule: "server.no_port", Severity: SeverityError,
+		Message: "server args do not contain ${MCPRT_PORT} or a --port/--bind flag; " +
+			"mcprt cannot determine where to proxy requests",
+	}
+}
+
+func validateHostRestriction(name string, args []string, allowExternal bool) []Violation {
+	if allowExternal {
+		return nil
+	}
+	var vv []Violation
+	for _, arg := range args {
+		if arg == "0.0.0.0" || arg == "::0" {
+			vv = append(vv, Violation{
+				Server: name, Rule: "server.external_bind", Severity: SeverityError,
+				Message: fmt.Sprintf(
+					"arg %q binds all interfaces. Set allow_external=true if this is intentional.", arg,
+				),
+			})
+		}
+	}
 	return vv
 }
 
 // hasPortBinding returns true if the server spec pins a port or contains a
 // port substitution token or an explicit --port / -p flag in its arguments or env.
 func hasPortBinding(spec manifest.ServerSpec) bool {
-	// Static port pin satisfies the requirement — the proxy knows where to forward.
 	if spec.Port > 0 {
 		return true
 	}
-	// Some servers read their port from an env var (e.g. PORT=${MCPRT_PORT}).
-	for _, v := range spec.Env {
-		if strings.Contains(v, "${MCPRT_PORT}") {
-			return true
-		}
+	if hasMCPRTPortEnv(spec.Env) {
+		return true
 	}
 	allArgs := append(spec.Exec[1:], spec.Args...)
-	for i, arg := range allArgs {
-		if strings.Contains(arg, "${MCPRT_PORT}") {
-			return true
-		}
-		// Accept --port <N>, --port=<N>, -p <N>
-		if arg == "--port" || arg == "-p" || arg == "--bind" {
-			if i+1 < len(allArgs) {
-				return true
-			}
-		}
-		if strings.HasPrefix(arg, "--port=") || strings.HasPrefix(arg, "--bind=") {
+	for i := range allArgs {
+		if argumentHasPortBinding(allArgs, i) {
 			return true
 		}
 	}
 	return false
+}
+
+func hasMCPRTPortEnv(env map[string]string) bool {
+	for _, v := range env {
+		if strings.Contains(v, "${MCPRT_PORT}") {
+			return true
+		}
+	}
+	return false
+}
+
+func argumentHasPortBinding(args []string, i int) bool {
+	arg := args[i]
+	if strings.Contains(arg, "${MCPRT_PORT}") {
+		return true
+	}
+	if arg == "--port" || arg == "-p" || arg == "--bind" {
+		return i+1 < len(args)
+	}
+	return strings.HasPrefix(arg, "--port=") || strings.HasPrefix(arg, "--bind=")
 }

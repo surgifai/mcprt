@@ -51,7 +51,7 @@ func serveCmd() *cobra.Command {
 	}
 
 	home, _ := os.UserHomeDir()
-	cmd.Flags().StringVar(&manifestPath, "config", filepath.Join(home, ".config", "mcprt", "mcprt.toml"), "manifest path")
+	cmd.Flags().StringVar(&manifestPath, "config", defaultConfigPath("mcprt.toml"), "manifest path")
 	cmd.Flags().StringVar(&logDir, "log-dir", filepath.Join(home, ".local", "state", "mcprt", "logs"), "server log directory")
 	cmd.Flags().StringVar(&logLevel, "log-level", "info", "log level (debug|info|warn|error)")
 	return cmd

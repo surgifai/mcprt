@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -33,12 +34,12 @@ type TrayConfig struct {
 }
 
 type RemoteConfig struct {
-	Host             string `toml:"host"`
-	User             string `toml:"user"`
-	Key              string `toml:"key"`
-	SSHPort          int    `toml:"ssh_port"`
-	RemoteMcprtPort  int    `toml:"remote_mcprt_port"`
-	LocalTunnelPort  int    `toml:"local_tunnel_port"`
+	Host            string `toml:"host"`
+	User            string `toml:"user"`
+	Key             string `toml:"key"`
+	SSHPort         int    `toml:"ssh_port"`
+	RemoteMcprtPort int    `toml:"remote_mcprt_port"`
+	LocalTunnelPort int    `toml:"local_tunnel_port"`
 }
 
 type APIConfig struct {
@@ -79,8 +80,7 @@ Example tray.toml (~/.config/mcprt/tray.toml):
 			return nil
 		},
 	}
-	home, _ := os.UserHomeDir()
-	cmd.Flags().StringVar(&cfgPath, "config", filepath.Join(home, ".config", "mcprt", "tray.toml"), "tray config path")
+	cmd.Flags().StringVar(&cfgPath, "config", defaultConfigPath("tray.toml"), "tray config path")
 	return cmd
 }
 
@@ -98,8 +98,8 @@ type tray struct {
 	mQuit    *systray.MenuItem
 
 	// tunnel lifecycle
-	sshClient  *ssh.Client
-	tunnelLn   net.Listener
+	sshClient    *ssh.Client
+	tunnelLn     net.Listener
 	cancelTunnel context.CancelFunc
 }
 
@@ -166,30 +166,10 @@ func (t *tray) connectTunnel() {
 	t.mTitle.SetTitle("Connecting…")
 	systray.SetTitle("mcprt ···")
 
-	// Close any existing tunnel.
-	if t.cancelTunnel != nil {
-		t.cancelTunnel()
-	}
-	if t.tunnelLn != nil {
-		t.tunnelLn.Close()
-	}
-	if t.sshClient != nil {
-		t.sshClient.Close()
-	}
+	t.closeTunnel()
 
 	cfg := t.cfg.Remote
-	sshPort := cfg.SSHPort
-	if sshPort == 0 {
-		sshPort = 22
-	}
-	remotePort := cfg.RemoteMcprtPort
-	if remotePort == 0 {
-		remotePort = 9090
-	}
-	localPort := cfg.LocalTunnelPort
-	if localPort == 0 {
-		localPort = 19090
-	}
+	sshPort, remotePort, localPort := trayPorts(cfg)
 
 	keyPath := expandHomePath(cfg.Key)
 	keyBytes, err := os.ReadFile(keyPath)
@@ -211,17 +191,9 @@ func (t *tray) connectTunnel() {
 	}
 
 	sshAddr := fmt.Sprintf("%s:%d", cfg.Host, sshPort)
-	client, err := ssh.Dial("tcp", sshAddr, sshCfg)
+	client, ln, err := t.openTunnelListeners(sshAddr, sshCfg, localPort)
 	if err != nil {
-		t.mTitle.SetTitle(fmt.Sprintf("✗ SSH: %v", err))
-		systray.SetTitle("mcprt ✗")
-		return
-	}
-
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
-	if err != nil {
-		t.mTitle.SetTitle(fmt.Sprintf("✗ local port %d in use", localPort))
-		client.Close()
+		t.showTunnelError(err, localPort)
 		return
 	}
 
@@ -266,6 +238,56 @@ func (t *tray) connectTunnel() {
 	}()
 
 	t.mTitle.SetTitle(fmt.Sprintf("⬤ %s (tunnel open)", cfg.Host))
+}
+
+func (t *tray) closeTunnel() {
+	if t.cancelTunnel != nil {
+		t.cancelTunnel()
+	}
+	if t.tunnelLn != nil {
+		t.tunnelLn.Close()
+	}
+	if t.sshClient != nil {
+		t.sshClient.Close()
+	}
+}
+
+func trayPorts(cfg RemoteConfig) (sshPort, remotePort, localPort int) {
+	sshPort = cfg.SSHPort
+	if sshPort == 0 {
+		sshPort = 22
+	}
+	remotePort = cfg.RemoteMcprtPort
+	if remotePort == 0 {
+		remotePort = 9090
+	}
+	localPort = cfg.LocalTunnelPort
+	if localPort == 0 {
+		localPort = 19090
+	}
+	return sshPort, remotePort, localPort
+}
+
+func (t *tray) openTunnelListeners(sshAddr string, sshCfg *ssh.ClientConfig, localPort int) (*ssh.Client, net.Listener, error) {
+	client, err := ssh.Dial("tcp", sshAddr, sshCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("ssh: %w", err)
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
+	if err != nil {
+		client.Close()
+		return nil, nil, fmt.Errorf("local port: %w", err)
+	}
+	return client, ln, nil
+}
+
+func (t *tray) showTunnelError(err error, localPort int) {
+	if strings.HasPrefix(err.Error(), "local port:") {
+		t.mTitle.SetTitle(fmt.Sprintf("✗ local port %d in use", localPort))
+		return
+	}
+	t.mTitle.SetTitle(fmt.Sprintf("✗ SSH: %v", err))
+	systray.SetTitle("mcprt ✗")
 }
 
 func waitSSH(c *ssh.Client) <-chan error {
