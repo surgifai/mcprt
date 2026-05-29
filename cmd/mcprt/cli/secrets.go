@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -25,35 +24,55 @@ The secrets file path is resolved in this order:
   2. secrets_file in mcprt.toml
   3. Default: ~/.config/mcprt/secrets.env`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// If --secrets-file wasn't set explicitly, try to read it from the manifest.
-			if !cmd.Flags().Changed("secrets-file") {
-				cfgFlag := cmd.Root().Flag("config")
-				cfgPath := ""
-				if cfgFlag != nil {
-					cfgPath = cfgFlag.Value.String()
-				}
-				if cfgPath == "" {
-					cfgPath = defaultConfigPath("mcprt.toml")
-				}
-				if cfg, err := manifest.Load(cfgPath); err == nil && cfg.Runtime.SecretsFile != "" {
-					secretsFile = cfg.Runtime.SecretsFile
-				}
-			}
+			applySecretsFileFromManifest(cmd, &secretsFile)
 			return nil
 		},
 	}
 
 	cmd.PersistentFlags().StringVar(&secretsFile, "secrets-file", defaultConfigPath("secrets.env"), "path to secrets file")
+	openStore := secretsStoreOpener(&secretsFile)
+	cmd.AddCommand(listSecretsCmd(openStore))
+	cmd.AddCommand(setSecretCmd(openStore))
+	cmd.AddCommand(getSecretCmd(openStore))
+	cmd.AddCommand(deleteSecretCmd(openStore))
+	cmd.AddCommand(verifySecretsCmd(openStore))
+	cmd.AddCommand(importSecretsCmd(openStore))
 
-	openStore := func() (*secrets.Store, error) {
-		store, err := secrets.Open(secretsFile)
+	return cmd
+}
+
+type openSecretsStore func() (*secrets.Store, error)
+
+func secretsStoreOpener(secretsFile *string) openSecretsStore {
+	return func() (*secrets.Store, error) {
+		store, err := secrets.Open(*secretsFile)
 		if err != nil {
-			return nil, fmt.Errorf("cannot open secrets file %q: %w", secretsFile, err)
+			return nil, fmt.Errorf("cannot open secrets file %q: %w", *secretsFile, err)
 		}
 		return store, nil
 	}
+}
 
-	cmd.AddCommand(&cobra.Command{
+func applySecretsFileFromManifest(cmd *cobra.Command, secretsFile *string) {
+	if cmd.Flags().Changed("secrets-file") {
+		return
+	}
+	cfg, err := manifest.Load(configPath(cmd))
+	if err == nil && cfg.Runtime.SecretsFile != "" {
+		*secretsFile = cfg.Runtime.SecretsFile
+	}
+}
+
+func configPath(cmd *cobra.Command) string {
+	cfgFlag := cmd.Root().Flag("config")
+	if cfgFlag != nil && cfgFlag.Value.String() != "" {
+		return cfgFlag.Value.String()
+	}
+	return defaultConfigPath("mcprt.toml")
+}
+
+func listSecretsCmd(openStore openSecretsStore) *cobra.Command {
+	return &cobra.Command{
 		Use:   "list",
 		Short: "List all secret key names",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -74,9 +93,11 @@ The secrets file path is resolved in this order:
 			}
 			return nil
 		},
-	})
+	}
+}
 
-	cmd.AddCommand(&cobra.Command{
+func setSecretCmd(openStore openSecretsStore) *cobra.Command {
+	return &cobra.Command{
 		Use:   "set KEY VALUE",
 		Short: "Add or update a secret",
 		Args:  cobra.ExactArgs(2),
@@ -91,9 +112,11 @@ The secrets file path is resolved in this order:
 			fmt.Fprintf(cmd.OutOrStdout(), "stored %s → %s\n", args[0], store.Path())
 			return nil
 		},
-	})
+	}
+}
 
-	cmd.AddCommand(&cobra.Command{
+func getSecretCmd(openStore openSecretsStore) *cobra.Command {
+	return &cobra.Command{
 		Use:   "get KEY",
 		Short: "Print a secret value",
 		Args:  cobra.ExactArgs(1),
@@ -109,9 +132,11 @@ The secrets file path is resolved in this order:
 			fmt.Fprintln(cmd.OutOrStdout(), val)
 			return nil
 		},
-	})
+	}
+}
 
-	cmd.AddCommand(&cobra.Command{
+func deleteSecretCmd(openStore openSecretsStore) *cobra.Command {
+	return &cobra.Command{
 		Use:   "delete KEY",
 		Short: "Remove a secret",
 		Args:  cobra.ExactArgs(1),
@@ -126,21 +151,15 @@ The secrets file path is resolved in this order:
 			fmt.Fprintf(cmd.OutOrStdout(), "deleted %s\n", args[0])
 			return nil
 		},
-	})
+	}
+}
 
-	verifyCmd := &cobra.Command{
+func verifySecretsCmd(openStore openSecretsStore) *cobra.Command {
+	return &cobra.Command{
 		Use:   "verify",
 		Short: "Check which ${VAR} references in mcprt.toml are present in the secrets file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfgFlag := cmd.Root().Flag("config")
-			cfgPath := ""
-			if cfgFlag != nil {
-				cfgPath = cfgFlag.Value.String()
-			}
-			if cfgPath == "" {
-				cfgPath = defaultConfigPath("mcprt.toml")
-			}
-			cfg, err := manifest.Load(cfgPath)
+			cfg, err := manifest.Load(configPath(cmd))
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
@@ -149,43 +168,55 @@ The secrets file path is resolved in this order:
 				fmt.Fprintln(cmd.OutOrStdout(), "no ${VAR} references found in config")
 				return nil
 			}
-			store, err := openStore()
+			vars, err := loadSecretVars(openStore)
 			if err != nil {
 				return err
 			}
-			vars, err := store.LoadAll()
-			if err != nil {
-				return fmt.Errorf("reading secrets: %w", err)
-			}
-			sort.Strings(refs)
-			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
-			fmt.Fprintln(w, "VAR\tSTATUS")
-			fmt.Fprintln(w, strings.Repeat("─", 44))
-			missing := 0
-			for _, k := range refs {
-				if _, ok := vars[k]; ok {
-					fmt.Fprintf(w, "%s\t✓ resolved\n", k)
-				} else {
-					fmt.Fprintf(w, "%s\t✗ MISSING\n", k)
-					missing++
-				}
-			}
-			w.Flush()
+			missing := printSecretStatus(cmd, refs, vars)
 			if missing > 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "\n%d missing — run: mcprt secrets set KEY VALUE\n", missing)
-				os.Exit(1)
+				return fmt.Errorf("%d missing — run: mcprt secrets set KEY VALUE", missing)
 			}
 			return nil
 		},
 	}
-	cmd.AddCommand(verifyCmd)
+}
 
-	cmd.AddCommand(&cobra.Command{
+func loadSecretVars(openStore openSecretsStore) (map[string]string, error) {
+	store, err := openStore()
+	if err != nil {
+		return nil, err
+	}
+	vars, err := store.LoadAll()
+	if err != nil {
+		return nil, fmt.Errorf("reading secrets: %w", err)
+	}
+	return vars, nil
+}
+
+func printSecretStatus(cmd *cobra.Command, refs []string, vars map[string]string) int {
+	sort.Strings(refs)
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "VAR\tSTATUS")
+	fmt.Fprintln(w, strings.Repeat("─", 44))
+	missing := 0
+	for _, k := range refs {
+		if _, ok := vars[k]; ok {
+			fmt.Fprintf(w, "%s\t✓ resolved\n", k)
+			continue
+		}
+		fmt.Fprintf(w, "%s\t✗ MISSING\n", k)
+		missing++
+	}
+	w.Flush()
+	return missing
+}
+
+func importSecretsCmd(openStore openSecretsStore) *cobra.Command {
+	return &cobra.Command{
 		Use:   "import FILE",
 		Short: "Import KEY=VALUE pairs from a .env file into the secrets file",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Read source file directly into a temp map, then write each key.
 			tmp := map[string]string{}
 			if err := secrets.MergeFile(args[0], tmp); err != nil {
 				return fmt.Errorf("reading %s: %w", args[0], err)
@@ -198,21 +229,23 @@ The secrets file path is resolved in this order:
 			if err != nil {
 				return err
 			}
-			keys := make([]string, 0, len(tmp))
-			for k := range tmp {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				if err := store.Set(k, tmp[k]); err != nil {
-					return fmt.Errorf("storing %s: %w", k, err)
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", k)
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "imported %d secret(s) → %s\n", len(tmp), store.Path())
-			return nil
+			return importSecretValues(cmd, store, tmp)
 		},
-	})
+	}
+}
 
-	return cmd
+func importSecretValues(cmd *cobra.Command, store *secrets.Store, values map[string]string) error {
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if err := store.Set(k, values[k]); err != nil {
+			return fmt.Errorf("storing %s: %w", k, err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "  %s\n", k)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "imported %d secret(s) → %s\n", len(values), store.Path())
+	return nil
 }

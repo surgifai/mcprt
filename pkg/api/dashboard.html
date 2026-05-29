@@ -86,7 +86,7 @@ td{padding:13px 22px;font-size:13px;border-top:1px solid #1e2433;vertical-align:
   </div>
 </div>
 
-<script>
+<script type="module">
 const KEY = '{{.APIKey}}';
 const H = {'Content-Type':'application/json', ...(KEY ? {'Authorization':'Bearer '+KEY} : {})};
 
@@ -223,8 +223,16 @@ async function saveSecret() {
 document.getElementById('modal').addEventListener('click', e => { if (e.target===document.getElementById('modal')) closeModal(); });
 document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
 
-void loadServers();
-void loadSecrets();
+globalThis.openAdd = openAdd;
+globalThis.openEdit = openEdit;
+globalThis.closeModal = closeModal;
+globalThis.saveSecret = saveSecret;
+globalThis.startSrv = startSrv;
+globalThis.stopSrv = stopSrv;
+globalThis.delSecret = delSecret;
+
+await loadServers();
+await loadSecrets();
 setInterval(() => { void loadServers(); }, 3000);
 </script>
 </body>

@@ -137,15 +137,7 @@ func (t *tray) onReady() {
 }
 
 func (t *tray) onExit() {
-	if t.cancelTunnel != nil {
-		t.cancelTunnel()
-	}
-	if t.tunnelLn != nil {
-		t.tunnelLn.Close()
-	}
-	if t.sshClient != nil {
-		t.sshClient.Close()
-	}
+	t.closeTunnel()
 }
 
 func (t *tray) handleClicks() {

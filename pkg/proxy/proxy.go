@@ -170,14 +170,18 @@ func trackRefcount(r *http.Request, entry *ServerEntry) func() {
 		return entry.Ref.Release
 	}
 	if sessionID == "" {
-		return func() {}
+		return func() {
+			// No session means there is no tracked refcount to release.
+		}
 	}
 	done := entry.Ref.TrackEphemeral(sessionID)
 	go func() {
 		<-r.Context().Done()
 		done()
 	}()
-	return func() {}
+	return func() {
+		// Ephemeral session cleanup is bound to request context cancellation.
+	}
 }
 
 func localReverseProxy(target *url.URL, entry *ServerEntry, name, reqHost string) *httputil.ReverseProxy {
