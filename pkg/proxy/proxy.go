@@ -140,19 +140,34 @@ func remoteReverseProxy(target *url.URL, entry *ServerEntry, name, tail string) 
 }
 
 func (h *Handler) ensureStarted(w http.ResponseWriter, r *http.Request, entry *ServerEntry, name, tail string) bool {
-	if entry.Sup.CurrentState() != supervisor.StateIdle {
-		return true
-	}
-	entry.logger.Info("cold start triggered", "method", r.Method, "path", tail)
 	ctx, cancel := context.WithTimeout(r.Context(), h.serverSpawnTimeout(entry))
 	defer cancel()
-	if err := entry.Sup.Start(ctx); err != nil {
-		entry.logger.Error("spawn failed", "err", err)
-		entry.Sup.IncrErrors()
-		http.Error(w, fmt.Sprintf("mcprt: server %q failed to start: %v", name, err), http.StatusServiceUnavailable)
-		return false
+
+	for {
+		switch entry.Sup.CurrentState() {
+		case supervisor.StateRunning:
+			return true
+		case supervisor.StateIdle:
+			entry.logger.Info("cold start triggered", "method", r.Method, "path", tail)
+			if err := entry.Sup.Start(ctx); err != nil {
+				entry.logger.Error("spawn failed", "err", err)
+				entry.Sup.IncrErrors()
+				http.Error(w, fmt.Sprintf("mcprt: server %q failed to start: %v", name, err), http.StatusServiceUnavailable)
+				return false
+			}
+			return true
+		case supervisor.StateSpawning, supervisor.StateStopping:
+			if !waitForLifecycleTransition(ctx) {
+				entry.Sup.IncrErrors()
+				http.Error(w, fmt.Sprintf("mcprt: server %q did not become ready: %v", name, ctx.Err()), http.StatusServiceUnavailable)
+				return false
+			}
+		default:
+			entry.Sup.IncrErrors()
+			http.Error(w, fmt.Sprintf("mcprt: server %q is in unknown state", name), http.StatusServiceUnavailable)
+			return false
+		}
 	}
-	return true
 }
 
 func (h *Handler) serverSpawnTimeout(entry *ServerEntry) time.Duration {
@@ -160,6 +175,17 @@ func (h *Handler) serverSpawnTimeout(entry *ServerEntry) time.Duration {
 		return entry.SpawnTimeout
 	}
 	return h.spawnTimeout
+}
+
+func waitForLifecycleTransition(ctx context.Context) bool {
+	timer := time.NewTimer(25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func trackRefcount(r *http.Request, entry *ServerEntry) func() {
