@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/surgifai-com/mcprt/pkg/api"
-	"github.com/surgifai-com/mcprt/pkg/manifest"
-	"github.com/surgifai-com/mcprt/pkg/policy"
-	"github.com/surgifai-com/mcprt/pkg/proxy"
-	"github.com/surgifai-com/mcprt/pkg/secrets"
-	"github.com/surgifai-com/mcprt/pkg/supervisor"
+	"github.com/surgifai/mcprt/pkg/api"
+	"github.com/surgifai/mcprt/pkg/manifest"
+	"github.com/surgifai/mcprt/pkg/policy"
+	"github.com/surgifai/mcprt/pkg/proxy"
+	"github.com/surgifai/mcprt/pkg/secrets"
+	"github.com/surgifai/mcprt/pkg/supervisor"
 )
 
 const mcprtConfigDir = ".config"

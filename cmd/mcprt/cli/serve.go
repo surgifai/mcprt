@@ -9,7 +9,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"github.com/surgifai-com/mcprt/pkg/runtime"
+	"github.com/surgifai/mcprt/pkg/runtime"
 )
 
 func serveCmd() *cobra.Command {

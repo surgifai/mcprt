@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/surgifai-com/mcprt/pkg/manifest"
-	"github.com/surgifai-com/mcprt/pkg/supervisor"
+	"github.com/surgifai/mcprt/pkg/manifest"
+	"github.com/surgifai/mcprt/pkg/supervisor"
 )
 
 func TestRewriteLocation(t *testing.T) {

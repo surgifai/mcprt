@@ -1,7 +1,7 @@
 # mcprt
 
-**On-demand process supervisor for Streamable-HTTP MCP servers.**  
-Servers spawn when a client connects. They stop when the last client disconnects.  
+**On-demand process supervisor for Streamable-HTTP MCP servers.**
+Servers spawn when a client connects. They stop when the last client disconnects.
 No timeouts. No always-on resident processes. STDIO transport refused.
 
 **License**: Apache 2.0 — Copyright 2026 Surgifai / Victor Q. Nguyen
@@ -223,19 +223,19 @@ mcprt  127.0.0.1:9090
 **Homebrew (macOS / Linux — recommended)**
 
 ```sh
-brew install surgifai-com/tap/mcprt
+brew install surgifai/tap/mcprt
 ```
 
 **Go install**
 
 ```sh
 # Requires Go 1.21+
-go install github.com/surgifai-com/mcprt/cmd/mcprt@latest
+go install github.com/surgifai/mcprt/cmd/mcprt@latest
 ```
 
 **Binary**
 
-Download a pre-built archive for your platform from [GitHub Releases](https://github.com/surgifai-com/mcprt/releases), extract, and move `mcprt` to your `$PATH`.
+Download a pre-built archive for your platform from [GitHub Releases](https://github.com/surgifai/mcprt/releases), extract, and move `mcprt` to your `$PATH`.
 
 ---
 
@@ -447,9 +447,9 @@ The CLI is one consumer of the library. Import it directly:
 
 ```go
 import (
-    "github.com/surgifai-com/mcprt/pkg/manifest"
-    "github.com/surgifai-com/mcprt/pkg/policy"
-    "github.com/surgifai-com/mcprt/pkg/runtime"
+    "github.com/surgifai/mcprt/pkg/manifest"
+    "github.com/surgifai/mcprt/pkg/policy"
+    "github.com/surgifai/mcprt/pkg/runtime"
 )
 
 // Lint a manifest without starting anything
@@ -483,7 +483,7 @@ Public API: `runtime.Runtime`, `manifest.Config`, `manifest.ServerSpec`, `proxy.
 - [ ] `mcprt logs <server>` — tail per-server stdout/stderr
 - [ ] `mcprt up <server>` / `mcprt down <server>` — manual overrides without editing config
 - [ ] Prometheus `/metrics` endpoint (opt-in, off by default)
-- [x] Homebrew formula (`surgifai-com/tap`)
+- [x] Homebrew formula (`surgifai/tap`)
 - [ ] systemd unit (`dist/systemd/`)
 - [ ] RSS + CPU sampling in `mcprt status` (gopsutil already a dep)
 

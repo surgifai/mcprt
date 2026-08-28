@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/surgifai-com/mcprt/pkg/manifest"
-	"github.com/surgifai-com/mcprt/pkg/supervisor"
+	"github.com/surgifai/mcprt/pkg/manifest"
+	"github.com/surgifai/mcprt/pkg/supervisor"
 )
 
 func statusCmd() *cobra.Command {

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/surgifai-com/mcprt/pkg/supervisor"
+	"github.com/surgifai/mcprt/pkg/supervisor"
 )
 
 // ServerEntry bundles a supervisor with its refcounter.

@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/surgifai-com/mcprt/pkg/manifest"
+	"github.com/surgifai/mcprt/pkg/manifest"
 )
 
 // State represents the lifecycle state of a supervised server.
@@ -51,10 +51,10 @@ type Supervisor struct {
 
 	stopCh chan struct{}
 
-	healthTimeout  time.Duration
-	killGrace      time.Duration
-	totalRequests  atomic.Int64
-	totalErrors    atomic.Int64
+	healthTimeout time.Duration
+	killGrace     time.Duration
+	totalRequests atomic.Int64
+	totalErrors   atomic.Int64
 }
 
 // Options configures a Supervisor.
