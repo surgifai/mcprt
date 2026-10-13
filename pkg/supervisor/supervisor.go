@@ -5,6 +5,8 @@ package supervisor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -48,6 +50,7 @@ type Supervisor struct {
 	restartCount int
 	lastSpawn    time.Time
 	lastErr      string
+	instanceID   string
 
 	stopCh chan struct{}
 
@@ -113,16 +116,17 @@ func (s *Supervisor) Stats() Stats {
 		pid = s.cmd.Process.Pid
 	}
 	return Stats{
-		Name:         s.name,
-		State:        s.state,
-		Port:         s.port,
-		PID:          pid,
-		RestartCount: s.restartCount,
-		LastSpawn:    s.lastSpawn,
-		LastError:    s.lastErr,
-		Requests:     s.totalRequests.Load(),
-		Errors:       s.totalErrors.Load(),
-		RSS:          rss(pid),
+		Name:             s.name,
+		State:            s.state,
+		Port:             s.port,
+		PID:              pid,
+		RestartCount:     s.restartCount,
+		ServerInstanceID: s.instanceID,
+		LastSpawn:        s.lastSpawn,
+		LastError:        s.lastErr,
+		Requests:         s.totalRequests.Load(),
+		Errors:           s.totalErrors.Load(),
+		RSS:              rss(pid),
 	}
 }
 
@@ -142,6 +146,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return fmt.Errorf("server %q is already %s", s.name, s.state)
 	}
 	s.setState(StateSpawning)
+	s.instanceID = ""
 	s.mu.Unlock()
 
 	cmd, err := s.buildCmd()
@@ -152,7 +157,6 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		return err
 	}
-
 	if err := cmd.Start(); err != nil {
 		s.mu.Lock()
 		s.setState(StateIdle)
@@ -160,9 +164,20 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		s.mu.Unlock()
 		return fmt.Errorf("spawning %q: %w", s.name, err)
 	}
+	instanceID, err := newInstanceID()
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		s.mu.Lock()
+		s.setState(StateIdle)
+		s.lastErr = err.Error()
+		s.mu.Unlock()
+		return fmt.Errorf("creating instance id for %q: %w", s.name, err)
+	}
 
 	s.mu.Lock()
 	s.cmd = cmd
+	s.instanceID = instanceID
 	s.lastSpawn = time.Now()
 	s.stopCh = make(chan struct{})
 	s.mu.Unlock()
@@ -187,6 +202,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		msg := fmt.Sprintf("exited during startup (code %d): %v", exitCode, exitErr)
 		s.mu.Lock()
 		s.cmd = nil
+		s.instanceID = ""
 		s.setState(StateIdle)
 		s.lastErr = msg
 		s.mu.Unlock()
@@ -200,6 +216,7 @@ func (s *Supervisor) Start(ctx context.Context) error {
 			go func() { <-exitCh }()
 			s.mu.Lock()
 			s.cmd = nil
+			s.instanceID = ""
 			s.setState(StateIdle)
 			s.lastErr = healthErr.Error()
 			s.mu.Unlock()
@@ -226,6 +243,7 @@ func (s *Supervisor) Stop() error {
 		return nil
 	}
 	s.setState(StateStopping)
+	s.instanceID = ""
 	cmd := s.cmd
 	stopCh := s.stopCh
 	s.mu.Unlock()
@@ -389,6 +407,7 @@ func (s *Supervisor) watch(cmd *exec.Cmd, exitCh <-chan error) {
 		}
 	}
 	s.cmd = nil
+	s.instanceID = ""
 	s.setState(StateIdle)
 	s.mu.Unlock()
 
@@ -412,16 +431,28 @@ func (s *Supervisor) killProcess(cmd *exec.Cmd) error {
 
 // Stats is a point-in-time snapshot of a supervised server's metrics.
 type Stats struct {
-	Name         string
-	State        State
-	Port         int
-	PID          int
-	RestartCount int
-	LastSpawn    time.Time
-	LastError    string
-	Requests     int64
-	Errors       int64
-	RSS          int64 // resident memory in bytes; 0 when process is not running
+	Name             string
+	State            State
+	Port             int
+	PID              int
+	RestartCount     int
+	ServerInstanceID string // UUID for the current spawned process; empty when inactive
+	LastSpawn        time.Time
+	LastError        string
+	Requests         int64
+	Errors           int64
+	RSS              int64 // resident memory in bytes; 0 when process is not running
+}
+
+func newInstanceID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(id[:])
+	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:], nil
 }
 
 // rss returns the resident set size of pid in bytes, or 0 on error.
