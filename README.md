@@ -439,6 +439,21 @@ is spawned — mcprt acts as a plain HTTP proxy for cloud-hosted MCP endpoints.
 
 Hot-reload is automatic — edit `mcprt.toml` while `serve` is running. Policy re-validates on every reload; invalid entries are refused without disrupting running servers.
 
+### Authenticated server status
+
+`GET /_api/servers` keeps its JSON array and existing fields. While the runtime
+listener is active, each local server row also includes
+`attestation_version: "mcprt.workflow-owner-status.v1"`, the daemon's current
+`daemon_instance_id`, `daemon_pid`, and actual `daemon_listen_address`. A
+live child process row includes its own `server_instance_id`, assigned `port`,
+process `pid`, `restart_count`, and `last_spawn`. Listener fields are omitted
+before a listener is active and after it exits; a child instance ID is omitted
+when that process is no longer active.
+
+These values identify daemon-listener and supervised-process lifetimes. They
+are live process facts, not proof of the executable or source contents. The
+endpoint continues to use the configured API bearer authentication.
+
 ---
 
 ## Embedding the library
