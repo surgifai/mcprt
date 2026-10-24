@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Historical example-only Google Ads placeholders"
+commits = ["376ffc3f3c9627a2a2717b0d97cacfc637fe1ed7"]
