@@ -5,6 +5,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
@@ -41,6 +43,11 @@ type Runtime struct {
 	handler *proxy.Handler
 	mux     *http.ServeMux
 	store   *secrets.Store
+
+	// These fields describe the active Serve listener and are guarded by mu.
+	daemonInstanceID    string
+	daemonPID           int
+	daemonListenAddress string
 
 	// Lifecycle hooks for embedders.
 	OnSpawn          func(name string)
@@ -190,10 +197,13 @@ func loadSecrets(cfg *manifest.Config, logger *slog.Logger) (*secrets.Store, map
 // Servers returns the current status of all registered servers as API types, sorted A-Z.
 // Implements api.Controller.
 func (r *Runtime) Servers() []api.ServerStatus {
-	raw := r.AllStats()
-	out := make([]api.ServerStatus, len(raw))
-	for i, s := range raw {
-		out[i] = api.ServerStatus{
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]api.ServerStatus, 0, len(r.sups))
+	for _, sup := range r.sups {
+		s := sup.Stats()
+		status := api.ServerStatus{
 			Name:         s.Name,
 			State:        string(s.State),
 			Port:         s.Port,
@@ -205,6 +215,14 @@ func (r *Runtime) Servers() []api.ServerStatus {
 			Errors:       s.Errors,
 			RSS:          s.RSS,
 		}
+		if r.daemonInstanceID != "" {
+			status.AttestationVersion = "mcprt.workflow-owner-status.v1"
+			status.DaemonInstanceID = r.daemonInstanceID
+			status.DaemonPID = r.daemonPID
+			status.DaemonListenAddress = r.daemonListenAddress
+		}
+		status.ServerInstanceID = s.ServerInstanceID
+		out = append(out, status)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -234,16 +252,31 @@ func (r *Runtime) StopServer(name string) error {
 
 // Serve starts the HTTP listener and blocks until ctx is cancelled.
 func (r *Runtime) Serve(ctx context.Context) error {
+	r.mu.RLock()
+	listenAddress := r.cfg.Runtime.Listen
+	r.mu.RUnlock()
 	srv := &http.Server{
-		Addr:    r.cfg.Runtime.Listen,
+		Addr:    listenAddress,
 		Handler: r.mux,
 	}
 
-	ln, err := net.Listen("tcp", r.cfg.Runtime.Listen)
+	ln, err := net.Listen("tcp", listenAddress)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", r.cfg.Runtime.Listen, err)
+		return fmt.Errorf("listen %s: %w", listenAddress, err)
 	}
-	r.logger.Info("mcprt listening", "addr", r.cfg.Runtime.Listen)
+	daemonInstanceID, err := newInstanceID()
+	if err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("create daemon instance id: %w", err)
+	}
+	actualListenAddress := ln.Addr().String()
+	r.mu.Lock()
+	r.daemonInstanceID = daemonInstanceID
+	r.daemonPID = os.Getpid()
+	r.daemonListenAddress = actualListenAddress
+	r.mu.Unlock()
+	defer r.clearListenerFacts(daemonInstanceID)
+	r.logger.Info("mcprt listening", "addr", actualListenAddress)
 
 	// Start fsnotify hot-reload.
 	go r.watchManifest(ctx)
@@ -279,6 +312,28 @@ func (r *Runtime) Serve(ctx context.Context) error {
 		}
 		return nil
 	}
+}
+
+func (r *Runtime) clearListenerFacts(instanceID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.daemonInstanceID != instanceID {
+		return
+	}
+	r.daemonInstanceID = ""
+	r.daemonPID = 0
+	r.daemonListenAddress = ""
+}
+
+func newInstanceID() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", err
+	}
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+	encoded := hex.EncodeToString(id[:])
+	return encoded[:8] + "-" + encoded[8:12] + "-" + encoded[12:16] + "-" + encoded[16:20] + "-" + encoded[20:], nil
 }
 
 // AllStats returns a snapshot of all registered servers.

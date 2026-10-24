@@ -28,6 +28,12 @@ type ServerStatus struct {
 	Requests     int64     `json:"requests"`
 	Errors       int64     `json:"errors"`
 	RSS          int64     `json:"rss"` // resident memory in bytes
+	// Lifecycle fields are additive and omitted until their live facts exist.
+	AttestationVersion  string `json:"attestation_version,omitempty"`
+	DaemonInstanceID    string `json:"daemon_instance_id,omitempty"`
+	DaemonPID           int    `json:"daemon_pid,omitempty"`
+	DaemonListenAddress string `json:"daemon_listen_address,omitempty"`
+	ServerInstanceID    string `json:"server_instance_id,omitempty"`
 }
 
 // Controller is the interface the API uses to observe and control the runtime.
